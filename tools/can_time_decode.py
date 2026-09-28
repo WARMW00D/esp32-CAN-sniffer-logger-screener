@@ -16,9 +16,9 @@ can_time_decode.py — дата/время и пробег из CAN-лога с�
 маркеры. Маркер BOOT начинает новую сессию (millis отсчитывается заново).
 
 Использование:
-    python can_time_decode.py can_log_0001.txt.gz [can_log_0002.txt.gz ...] [--tz 3] [--all]
+    python can_time_decode.py can_log_0001.txt.lzma [can_log_0002.txt.lzma ...] [--tz 3] [--all]
 
-Понимает и простые .txt, и сжатые .txt.gz (в том числе оборванные — без
+Понимает простые .txt и сжатые .txt.lzma / .txt.gz (в том числе оборванные — без
 штатного закрытия файла: читается всё, что успело записаться).
 
     --tz N   сдвиг в часах, если машина шлёт UTC (для Москвы: --tz 3)
@@ -31,6 +31,7 @@ f_<millis>.jpg) переводится в реальное время.
 import argparse
 import datetime as dt
 import sys
+import lzma
 import zlib
 
 TIME_ID = 0x6B2
@@ -51,28 +52,40 @@ def decode_6b2(data: bytes):
     return sig(data, 8, 20), t
 
 
+def _decompressor(path):
+    """Потоковый распаковщик по расширению или None для простого текста."""
+    low = path.lower()
+    if low.endswith(".gz"):
+        return zlib.decompressobj(16 + zlib.MAX_WBITS), (zlib.error,)
+    if low.endswith(".lzma"):
+        return lzma.LZMADecompressor(format=lzma.FORMAT_ALONE), (lzma.LZMAError, EOFError)
+    if low.endswith(".xz"):
+        return lzma.LZMADecompressor(format=lzma.FORMAT_XZ), (lzma.LZMAError, EOFError)
+    return None, ()
+
+
 def read_lines(path):
-    """Строки лога из .txt или .txt.gz (оборванный gzip тоже читается)."""
-    if path.lower().endswith(".gz"):
-        d = zlib.decompressobj(16 + zlib.MAX_WBITS)
-        tail = b""
-        with open(path, "rb") as f:
-            while True:
-                chunk = f.read(1 << 16)
-                if not chunk:
-                    break
-                try:
-                    data = tail + d.decompress(chunk)
-                except zlib.error:
-                    break              # повреждённый хвост — отдаём, что есть
-                *lines, tail = data.split(b"\n")
-                for l in lines:
-                    yield l.decode("utf-8", "replace")
-        if tail:
-            yield tail.decode("utf-8", "replace")
-    else:
+    """Строки лога из .txt / .txt.gz / .txt.lzma (оборванные архивы тоже читаются)."""
+    d, errors = _decompressor(path)
+    if d is None:
         with open(path, encoding="utf-8", errors="replace") as f:
             yield from f
+        return
+    tail = b""
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 16)
+            if not chunk:
+                break
+            try:
+                data = tail + d.decompress(chunk)
+            except errors:
+                break              # повреждённый/оборванный хвост — отдаём, что есть
+            *lines, tail = data.split(b"\n")
+            for l in lines:
+                yield l.decode("utf-8", "replace")
+    if tail:
+        yield tail.decode("utf-8", "replace")
 
 
 def parse(paths):
