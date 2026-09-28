@@ -29,10 +29,11 @@ esp32s3cam_ov5640_video_ble_sync_client/
 esp32s3cam_ov5640_aiming_stream/
     esp32s3cam_ov5640_aiming_stream.ino          — ESP32-S3 + OV5640 camera, aiming mode
 docs/
-    sniffer_supermini.svg, sniffer_wroom.svg,
+    sniffer_supermini.svg, sniffer_supermini_sd_ams1117.svg, sniffer_wroom.svg,
     camera_aithinker.svg, camera_s3_ov5640.svg   — wiring diagrams
 tools/
     can_time_decode.py                           — date/time and odometer from CAN logs
+    log_unpack.py                                — unpack .txt.gz logs (also truncated ones), join a folder
 README.md
 README_ru.md
 ```
@@ -44,11 +45,12 @@ README_ru.md
 | | |
 |---|---|
 | CAN sniffer, ESP32-S3-WROOM-1 CAM | [docs/sniffer_wroom.svg](docs/sniffer_wroom.svg) |
-| CAN sniffer, ESP32-S3 Super Mini | [docs/sniffer_supermini.svg](docs/sniffer_supermini.svg) |
+| CAN sniffer, ESP32-S3 Super Mini, plain 3.3 V SD module (default) | [docs/sniffer_supermini.svg](docs/sniffer_supermini.svg) |
+| CAN sniffer, ESP32-S3 Super Mini, SD module with AMS1117 feeding the peripherals | [docs/sniffer_supermini_sd_ams1117.svg](docs/sniffer_supermini_sd_ams1117.svg) |
 | Camera, AI-Thinker ESP32-CAM | [docs/camera_aithinker.svg](docs/camera_aithinker.svg) |
 | Camera, ESP32-S3-WROOM-1 CAM + OV5640 | [docs/camera_s3_ov5640.svg](docs/camera_s3_ov5640.svg) |
 
-![CAN sniffer, WROOM](docs/sniffer_wroom.svg)
+![CAN sniffer, ESP32-S3 Super Mini](docs/sniffer_supermini.svg)
 
 ---
 
@@ -109,7 +111,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"1.4.0"` (WROOM) / `"1.10.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.0.0"` (WROOM) / `"2.0.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -117,7 +119,10 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 | `CAN_TIME_MAX_JUMP_S` | `0` | Protection against a reset car clock: 0 = trust the car fully; >0 = if the sniffer already has valid time and the car differs by more than this, the car time is ignored. Car time earlier than the firmware build date is always ignored |
 | `CAN_TIME_WAIT_MS` | `4500` | How long to wait for the time frame before opening the first log file (frames are buffered meanwhile) |
 | `CAN_TIME_CONFIRM_FRAMES` | `3` | Car time is accepted only after this many consecutive 0x6B2 frames agree with each other (±2 s); out-of-range values and impossible dates reset the series — protects against GPS glitches |
-| `LOG_MAX_BYTES` | `4 MB` | Log rotation size (a new file is also started on every boot) |
+| `LOG_MAX_BYTES` | `4 MB` | Log rotation size — of the file on the card, i.e. compressed if `LOG_COMPRESS 1` (a new file is also started on every boot) |
+| `LOG_COMPRESS` | `1` | Write logs gzip-compressed on the fly (`.txt.gz`, ~3.5× smaller); 0 = plain `.txt` |
+| `LOG_GZ_DEPTH` | `4` | Match search depth: 1 = least CPU, 4 = better ratio almost for free |
+| `LOG_GZ_SYNC_MS` | `1000` | Compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
 | `WIFI_TX_POWER` | `WIFI_POWER_8_5dBm` | Wi-Fi transmit power: lower means smaller current spikes, at the cost of range and portal speed |
 | `AP_SSID` / `AP_PASSWORD` | `S3-CAN-Sniffer-Setup` / `canlogger123` | Portal access point |
@@ -175,11 +180,15 @@ The external RTC is optional. At boot the sniffer takes time from, in order:
 
 With `CAN_TIME_SYNC 2` the car's clock is authoritative: after disconnecting the car battery its clock is wrong, so set it (or enable GPS time sync in MMI), or switch to `1` / `0`. A time set on the portal or taken from CAN is also written to the external RTC if there is one. The boot marker in the log records the time source and the RTC type.
 
-`can_time_decode.py` decodes 0x6B2 from existing logs and maps sniffer `millis` (and camera frame names) to wall-clock time.
+`tools/can_time_decode.py` decodes 0x6B2 from existing logs and maps sniffer `millis` (and camera frame names) to wall-clock time.
 
 ### Log format
 
-Files: `/YYYY-MM-DD/can_log_NNNN.txt`. Files are created only when real CAN frames arrive: no traffic on the bus — no file. A new file is started on every boot (at the first frame) and whenever the current one reaches `LOG_MAX_BYTES` (~4 minutes of I-CAN traffic at 4 MB). After midnight the next file goes into the new date folder. If the DS3231 is missing or its time is invalid, logs go to `/no-rtc/` until the time is set on the portal (the camera then writes to `/no-rtc/frames/`). The DS3231 is read only once at boot; after that the ESP32 system clock is used. Files of one trip can simply be concatenated in name order. One frame per line:
+Files: `/YYYY-MM-DD/can_log_NNNN.txt.gz` (with `LOG_COMPRESS 0` — `.txt`). Files are created only when real CAN frames arrive: no traffic on the bus — no file. A new file is started on every boot (at the first frame) and whenever the current one reaches `LOG_MAX_BYTES` (a 4 MB compressed file holds ~14 MB of text, ~3–4 minutes of busy I-CAN traffic). After midnight the next file goes into the new date folder. If the DS3231 is missing or its time is invalid, logs go to `/no-rtc/` until the time is set on the portal (the camera then writes to `/no-rtc/frames/`). The DS3231 is read only once at boot; after that the ESP32 system clock is used. Files of one trip can simply be concatenated in name order.
+
+Compression is standard gzip written on the fly (LZ77 + fixed Huffman codes, no external library), so the files open in 7-Zip, WinRAR, `gzip -d`, or Python's `gzip`. Data is flushed to the card every `LOG_GZ_SYNC_MS`; a file that was not closed properly (crash, power loss) lacks the gzip trailer — `tools/log_unpack.py` unpacks it up to the break without errors and can join a folder into one text file for other tools.
+
+One frame per line (inside the archive):
 
 ```
 <millis> <S|X> <ID hex> [R]<DLC> <data hex>
@@ -195,7 +204,7 @@ Files: `/YYYY-MM-DD/can_log_NNNN.txt`. Files are created only when real CAN fram
 # 931204 ===== ACC OFF / SHUTDOWN =====
 ```
 
-Close reasons: `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT`, `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
+Close reasons: `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT`, `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt.gz` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
 
 ### BLE
 
