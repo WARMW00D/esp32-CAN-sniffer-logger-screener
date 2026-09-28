@@ -107,7 +107,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.0.1"
+#define FW_VERSION   "2.2.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -126,6 +126,9 @@
 #include <Update.h>
 #include <sys/time.h>
 #include <Preferences.h>
+#include "freertos/stream_buffer.h"
+// Кодер LZMA (LZMA SDK, public domain) — исходники в папке src/lzma скетча
+#include "src/lzma/LzmaEnc.h"
 #include "esp_app_format.h"
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
@@ -198,6 +201,21 @@ volatile bool canRunning = true;    // приём CAN запущен
 volatile bool sdBusy     = false;   // идёт форматирование — sdTask к карте не лезет
 volatile bool ledStopped = false;   // светодиод выключен перед сном/перезагрузкой
 volatile uint32_t lastCanFrameMs = 0;   // время последнего принятого кадра CAN
+
+// ---------- Статистика и журнал ошибок ----------
+// Раз в STATS_PERIOD_MS в Serial выводится строка [STAT]: поток кадров,
+// скорость записи/сжатия, максимальное заполнение буферов и потери кадров.
+// Ошибки и важные события пишутся в /errors.log в корне SD-карты.
+#define STATS_PERIOD_MS      60000
+#define ERRLOG_PATH          "/errors.log"
+#define ERRLOG_OLD_PATH      "/errors.old.log"
+#define ERRLOG_MAX_BYTES     (256UL * 1024UL)   // потом — в errors.old.log
+volatile uint32_t canFramesTotal  = 0;   // принято кадров с момента запуска
+volatile uint32_t canDroppedTotal = 0;   // потеряно: очередь canQueue была полна
+volatile uint32_t canQueueMax     = 0;   // макс. заполнение очереди за период
+volatile uint32_t logInTotal      = 0;   // байт текста лога (до сжатия)
+volatile uint32_t logOutTotal     = 0;   // байт на карте (после сжатия)
+volatile uint32_t lzSbMax         = 0;   // макс. заполнение буфера кодера за период
 #define RGB_LED_GAP_MS      150   // пауза между вспышкой состояния и белой
 
 // ---------- Очередь кадров CAN ----------
@@ -211,15 +229,18 @@ volatile uint32_t lastCanFrameMs = 0;   // время последнего пр�
 #define LOG_MAX_BYTES   (4UL * 1024UL * 1024UL)
 
 // ---------- Сжатие лога ----------
-// 1 — файлы пишутся сразу сжатыми: can_log_NNNN.txt.gz (обычный gzip,
-//     открывается 7-Zip/WinRAR/gzip/Python). Текстовый CAN-лог сжимается
-//     примерно в 3–3.5 раза. LOG_MAX_BYTES считается по СЖАТОМУ размеру —
-//     файлы того же размера, но данных в каждом в ~3.5 раза больше.
-// 0 — как раньше, простой текст can_log_NNNN.txt.
-#define LOG_COMPRESS     1
-// Сколько повторов проверять при поиске (1 — минимум CPU, 4 — лучше сжатие
-// почти даром, 8+ — ещё немного лучше и медленнее)
-#define LOG_GZ_DEPTH     4
+// 2 — LZMA (по умолчанию): can_log_NNNN.txt.lzma, сжатие ~8 раз. Открывается
+//     7-Zip / FAR (ArcLite) / xz / Python (lzma). Кодер — LZMA SDK Игоря
+//     Павлова (public domain), файлы в папке src/lzma скетча. Памяти ~1 МБ
+//     (PSRAM), по нагрузке на процессор — как gzip ниже.
+// 1 — gzip: can_log_NNNN.txt.gz, сжатие ~3.5 раза, памяти ~130 КБ.
+// 0 — без сжатия: can_log_NNNN.txt.
+// LOG_MAX_BYTES считается по размеру файла НА КАРТЕ (сжатому).
+#define LOG_COMPRESS     2
+// LZMA: словарь. 64 КБ — оптимум для CAN-логов (больше почти не даёт),
+// 32 КБ — ~7.7 раза и чуть меньше памяти
+#define LOG_LZMA_DICT    (64UL * 1024UL)
+// gzip: #define LOG_GZ_DEPTH     4
 // Раз в столько мс данные "проталкиваются" на карту (sync flush): при сбое
 // питания теряется не больше этого интервала, файл распаковывается до обрыва
 #define LOG_GZ_SYNC_MS   1000
@@ -440,6 +461,57 @@ void setSystemTime(uint32_t unixLocal) {
   settimeofday(&tv, nullptr);
 }
 
+// ---------------------------------------------------------------------
+// Журнал ошибок /errors.log. Пишется из любой задачи (под мьютексом).
+// До монтирования SD строки копятся в памяти и сбрасываются потом.
+// Формат: "2026-09-28 21:05:13 [fw 2.2.0, 123456 мс] текст"
+// ---------------------------------------------------------------------
+static SemaphoreHandle_t errMutex = nullptr;
+static String errPending[12];
+static int    errPendingN = 0;
+
+static void errWriteLine(const String& line) {
+  File f = LOGFS.open(ERRLOG_PATH, FILE_APPEND);
+  if (!f) return;
+  f.print(line);
+  size_t sz = f.size();
+  f.close();
+  if (sz > ERRLOG_MAX_BYTES) {             // ротация: одна старая копия
+    LOGFS.remove(ERRLOG_OLD_PATH);
+    LOGFS.rename(ERRLOG_PATH, ERRLOG_OLD_PATH);
+  }
+}
+
+void errLog(const char* fmt, ...) {
+  char msg[200];
+  va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
+  char ts[24] = "время неизвестно";
+  if (timeValid) {
+    DateTime n((uint32_t)time(nullptr));
+    snprintf(ts, sizeof(ts), "%04d-%02d-%02d %02d:%02d:%02d", n.year(), n.month(), n.day(),
+             n.hour(), n.minute(), n.second());
+  }
+  String line = String(ts) + " [fw " FW_VERSION ", " + String(millis()) + " мс] " + msg + "\r\n";
+  Serial.print("[ERR] " + line);
+  if (!errMutex) errMutex = xSemaphoreCreateMutex();
+  if (xSemaphoreTake(errMutex, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+  if (!sdMounted) {
+    if (errPendingN < 12) errPending[errPendingN++] = line;
+  } else {
+    errWriteLine(line);
+  }
+  xSemaphoreGive(errMutex);
+}
+
+// Сбросить накопленное до монтирования SD
+void errFlushPending() {
+  if (!errMutex) errMutex = xSemaphoreCreateMutex();
+  xSemaphoreTake(errMutex, portMAX_DELAY);
+  for (int i = 0; i < errPendingN; i++) errWriteLine(errPending[i]);
+  errPendingN = 0;
+  xSemaphoreGive(errMutex);
+}
+
 // Освобождение шины I2C: если ESP32 перезагрузился посреди транзакции,
 // DS3231 может держать SDA в нуле, ожидая недополученные такты. 9 тактов
 // SCL + STOP возвращают его в исходное состояние без снятия питания.
@@ -555,6 +627,7 @@ void setupRTC() {
       ok = plausible(a) && plausible(b) && (b.unixtime() - a.unixtime() <= 1);
       now = b;
     }
+    if (rtcOscStopped) errLog("%s: часы останавливались (OSF/VL) — время под вопросом", rtcName());
     Serial.printf("%s: статус=0x%02X (стоп=%d), %04d-%02d-%02d %02d:%02d:%02d -> %s\n",
                   rtcName(), st < 0 ? 0xFF : st, rtcOscStopped ? 1 : 0,
                   now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second(),
@@ -631,7 +704,7 @@ bool canTimeFrame(const CanLogEntry& e) {
   if (t < buildTime) {
     static bool warned = false;
     if (!warned) {
-      Serial.printf("Время из CAN (%04d-%02d-%02d) раньше сборки прошивки — часы машины сбиты, игнорирую\n", Y, M, D);
+      errLog("Время из CAN (%04d-%02d-%02d) раньше сборки прошивки — часы машины сбиты, игнорирую", Y, M, D);
       warned = true;
     }
     return false;
@@ -644,7 +717,7 @@ bool canTimeFrame(const CanLogEntry& e) {
     if (abs(diff) > CAN_TIME_MAX_JUMP_S) {
       static bool warned = false;
       if (!warned) {
-        Serial.printf("Время из CAN расходится на %ld с (> CAN_TIME_MAX_JUMP_S) — часы машины сбиты? Не трогаю\n", (long)diff);
+        errLog("Время из CAN расходится на %ld с (> CAN_TIME_MAX_JUMP_S) — часы машины сбиты? Не трогаю", (long)diff);
         warned = true;
       }
       return false;
@@ -989,6 +1062,9 @@ void handleRoot() {
                   TR("Форматировать карту в FAT32", "Format card as FAT32") + "</button></form>") +
                 "<p><a href='/logs'>" + TR("Список логов на SD-карте", "Logs on SD card") + "</a></p>"
                 "<p><a href='/update'>" + TR("Обновление прошивки", "Firmware update") + "</a></p>"
+                "<p><small>CAN: " + TR("принято кадров", "frames received") + " " + String(canFramesTotal) + ", " +
+                TR("потеряно", "dropped") + " " + String(canDroppedTotal) + " · <a href='/download?file=" ERRLOG_PATH "'>" +
+                TR("журнал ошибок", "error log") + "</a></small></p>"
                 "<hr><p><small>" + TR("Прошивка", "Firmware") + " " FW_VERSION " (" +
                 TR("сборка", "build") + " " FW_BUILD ")</small></p>"
                 "</body></html>";
@@ -1142,6 +1218,19 @@ void handleLogs() {
     html += "<p>" + TR("Не удалось открыть корень SD-карты", "Cannot open SD card root") + "</p></body></html>";
     webServer.send(500, "text/html; charset=utf-8", html);
     return;
+  }
+
+  // Журнал ошибок в корне карты — ссылкой вверху страницы
+  if (LOGFS.exists(ERRLOG_PATH)) {
+    File ef = LOGFS.open(ERRLOG_PATH);
+    size_t es = ef ? ef.size() : 0;
+    if (ef) ef.close();
+    html += "<p><a href='/download?file=" ERRLOG_PATH "'>errors.log</a> <span class='meta'>(" + humanSize(es) + ")</span>";
+    if (LOGFS.exists(ERRLOG_OLD_PATH))
+      html += " · <a href='/download?file=" ERRLOG_OLD_PATH "'>errors.old.log</a>";
+    html += "</p>";
+  } else {
+    html += "<p><span class='meta'>" + TR("Журнал ошибок пуст", "Error log is empty") + "</span></p>";
   }
 
   bool foundAny = false;
@@ -1637,7 +1726,7 @@ void handleUpdateDone() {
   }
   if (webUpdFailed) {
     otaInProgress = false;
-    Serial.println("WEB OTA: ошибка — " + webUpdError);
+    errLog("WEB OTA: ошибка — %s", webUpdError.c_str());
     webServer.send(500, "text/html; charset=utf-8",
       htmlHead(TR("Ошибка прошивки", "Update error")) + "<h2>" + TR("Ошибка", "Error") + "</h2><p>" +
       webUpdError + "</p><p>" + TR("Старая прошивка не тронута.", "The old firmware is untouched.") +
@@ -1993,44 +2082,170 @@ private:
   void flushOut() { if (olen) { o->write(obuf, olen); outSize += olen; olen = 0; } }
 };
 
-#if LOG_COMPRESS
+#if LOG_COMPRESS == 1
 GzLog<File> gzLog;
 uint32_t gzLastSync = 0;
 bool     gzDirty = false;   // есть данные после последнего sync
 #endif
 
+#if LOG_COMPRESS == 2
+// ---------------------------------------------------------------------
+// LZMA: кодер работает в отдельной задаче lzTask. sdTask кладёт строки в
+// потоковый буфер lzSb, кодер забирает их (LzmaEnc_Encode сам "тянет"
+// вход) и пишет сжатые данные в canLogFile. Файл, пока он открыт, пишет
+// ТОЛЬКО lzTask; sdTask открывает его до старта и закрывает после
+// завершения кодера (lzDoneSem).
+// ---------------------------------------------------------------------
+static StreamBufferHandle_t lzSb = nullptr;
+static SemaphoreHandle_t   lzStartSem = nullptr, lzDoneSem = nullptr;
+static volatile bool       lzEof = false;       // больше данных не будет
+static volatile bool       lzFailed = false;    // кодер не смог стартовать
+static volatile uint32_t   lzOutBytes = 0;      // сжатых байт в файле
+static uint32_t            lzLastFlush = 0;
+
+static void* lzAllocF(ISzAllocPtr, size_t n) {
+  void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // крупное — в PSRAM
+  return p ? p : malloc(n);
+}
+static void lzFreeF(ISzAllocPtr, void* p) { free(p); }
+static const ISzAlloc lzAlloc = { lzAllocF, lzFreeF };
+
+// Вход кодера: ждём данные; 0 байт = конец потока (только после lzEof)
+static SRes lzRead(ISeqInStreamPtr, void* buf, size_t* size) {
+  size_t got = 0;
+  while (!got) {
+    got = xStreamBufferReceive(lzSb, buf, *size, pdMS_TO_TICKS(200));
+    if (!got && lzEof && xStreamBufferIsEmpty(lzSb)) break;
+  }
+  *size = got;
+  return SZ_OK;
+}
+
+// Выход кодера: в файл. Раз в секунду — flush (обновить размер в FAT)
+static size_t lzWrite(ISeqOutStreamPtr, const void* buf, size_t size) {
+  size_t w = canLogFile.write((const uint8_t*)buf, size);
+  lzOutBytes += w;
+  logOutTotal += w;
+  if (millis() - lzLastFlush >= 1000) { canLogFile.flush(); lzLastFlush = millis(); }
+  return w;
+}
+
+static const ISeqInStream  lzIn  = { lzRead };
+static const ISeqOutStream lzOut = { lzWrite };
+
+void lzTask(void*) {
+  for (;;) {
+    xSemaphoreTake(lzStartSem, portMAX_DELAY);
+    SRes r = SZ_ERROR_MEM;
+    CLzmaEncHandle enc = LzmaEnc_Create(&lzAlloc);
+    if (enc) {
+      CLzmaEncProps pr;
+      LzmaEncProps_Init(&pr);
+      pr.level        = 1;               // быстрый режим (hash chain)
+      pr.dictSize     = LOG_LZMA_DICT;
+      pr.numHashBytes = 4;               // 5 по умолчанию — вдвое больше памяти
+      pr.writeEndMark = 1;               // размер заранее неизвестен
+      pr.numThreads   = 1;
+      LzmaEncProps_Normalize(&pr);
+      r = LzmaEnc_SetProps(enc, &pr);
+      if (r == SZ_OK) {
+        // Заголовок .lzma: 5 байт свойств + 8 байт размера (FF.. = неизвестен)
+        Byte hdr[13];
+        SizeT hs = 5;
+        LzmaEnc_WriteProperties(enc, hdr, &hs);
+        memset(hdr + 5, 0xFF, 8);
+        lzWrite(&lzOut, hdr, 13);
+        r = LzmaEnc_Encode(enc, &lzOut, &lzIn, NULL, &lzAlloc, &lzAlloc);
+      }
+      LzmaEnc_Destroy(enc, &lzAlloc, &lzAlloc);
+    }
+    if (r != SZ_OK) {
+      lzFailed = true;
+      errLog("LZMA: ошибка кодера %d (памяти мало?) — данные файла %s теряются", (int)r, currentLogName.c_str());
+      // Выгребаем вход до конца, чтобы sdTask не повис на полном буфере
+      uint8_t junk[256];
+      while (!(lzEof && xStreamBufferIsEmpty(lzSb)))
+        xStreamBufferReceive(lzSb, junk, sizeof(junk), pdMS_TO_TICKS(200));
+    }
+    xSemaphoreGive(lzDoneSem);
+  }
+}
+
+void lzSetup() {
+  lzSb       = xStreamBufferCreate(32 * 1024, 1);
+  lzStartSem = xSemaphoreCreateBinary();
+  lzDoneSem  = xSemaphoreCreateBinary();
+  // Ядро 0: там же приём CAN (приоритет выше) и WiFi; ядро 1 остаётся вебу и SD
+  xTaskCreatePinnedToCore(lzTask, "lzTask", 8192, NULL, 1, NULL, 0);
+}
+
+// Запустить кодер для только что открытого canLogFile
+void lzStartFile() {
+  xStreamBufferReset(lzSb);
+  lzEof = false;
+  lzFailed = false;
+  lzOutBytes = 0;
+  lzLastFlush = millis();
+  xSemaphoreGive(lzStartSem);
+}
+#endif
+
 // Единые функции записи в лог: сжатие или простой текст
 void logWrite(const char* d, size_t n) {
-#if LOG_COMPRESS
+#if LOG_COMPRESS == 2
+  if (!lzFailed) {
+    // Если кодер не успевает, ждём (кадры пока копятся в canQueue)
+    size_t sent = xStreamBufferSend(lzSb, d, n, pdMS_TO_TICKS(3000));
+    if (sent < n) {
+      lzFailed = true;
+      errLog("LZMA: кодер не принимает данные 3 с (завис?) — запись файла %s остановлена", currentLogName.c_str());
+    }
+    size_t fill = xStreamBufferBytesAvailable(lzSb);
+    if (fill > lzSbMax) lzSbMax = fill;
+  }
+#elif LOG_COMPRESS == 1
   gzLog.write((const uint8_t*)d, n);
   gzDirty = true;
 #else
   canLogFile.write((const uint8_t*)d, n);
+  logOutTotal += n;
 #endif
   currentLogBytes += n;
+  logInTotal += n;
 }
 
 // Размер файла для ротации: сжатый (что реально лежит на карте)
 uint32_t logFileBytes() {
-#if LOG_COMPRESS
+#if LOG_COMPRESS == 2
+  return lzOutBytes;
+#elif LOG_COMPRESS == 1
   return gzLog.compressedBytes();
 #else
   return currentLogBytes;
 #endif
 }
 
-// Протолкнуть данные на карту
+// Протолкнуть данные на карту. Для LZMA — ничего: файлом владеет кодер,
+// он сам сбрасывает данные на карту
 void logSync() {
-#if LOG_COMPRESS
+#if LOG_COMPRESS == 2
+  return;
+#else
+#if LOG_COMPRESS == 1
   if (gzDirty) { gzLog.sync(); gzDirty = false; }
   gzLastSync = millis();
 #endif
   canLogFile.flush();
+#endif
 }
 
-// Закрыть файл штатно (для .gz — с контрольной суммой в конце)
+// Закрыть файл штатно (для .gz / .lzma — с корректным концом потока)
 void logClose() {
-#if LOG_COMPRESS
+#if LOG_COMPRESS == 2
+  lzEof = true;
+  if (xSemaphoreTake(lzDoneSem, pdMS_TO_TICKS(15000)) != pdTRUE)
+    errLog("LZMA: кодер не завершился за 15 с — файл %s закрыт как есть", currentLogName.c_str());
+#elif LOG_COMPRESS == 1
   gzLog.finish();
   gzDirty = false;
 #endif
@@ -2046,7 +2261,7 @@ uint32_t nextLogIndex(const String& folder) {
   while (e) {
     String n = String(e.name());
     if (n.lastIndexOf('/') != -1) n = n.substring(n.lastIndexOf('/') + 1);
-    if (n.startsWith("can_log_") && (n.endsWith(".txt") || n.endsWith(".txt.gz"))) {
+    if (n.startsWith("can_log_") && (n.endsWith(".txt") || n.endsWith(".txt.gz") || n.endsWith(".txt.lzma"))) {
       uint32_t idx = (uint32_t)n.substring(8, n.indexOf('.')).toInt();
       if (idx > maxIdx) maxIdx = idx;
     }
@@ -2064,7 +2279,8 @@ bool openNewLogFile(const String& prevName) {
   if (!LOGFS.exists(currentDateFolder)) LOGFS.mkdir(currentDateFolder);
 
   char name[28];
-  snprintf(name, sizeof(name), LOG_COMPRESS ? "can_log_%04lu.txt.gz" : "can_log_%04lu.txt",
+  snprintf(name, sizeof(name), LOG_COMPRESS == 2 ? "can_log_%04lu.txt.lzma" :
+                               LOG_COMPRESS == 1 ? "can_log_%04lu.txt.gz" : "can_log_%04lu.txt",
            (unsigned long)nextLogIndex(currentDateFolder));
   currentLogName = name;
   String logPath = currentDateFolder + "/" + currentLogName;
@@ -2073,11 +2289,13 @@ bool openNewLogFile(const String& prevName) {
   currentLogBytes = 0;
   if (canLogFile) setActiveLogFolder(currentDateFolder.c_str());
   if (!canLogFile) {
-    Serial.println("Не удалось открыть " + logPath);
+    errLog("SD: не удалось открыть %s", logPath.c_str());
     return false;
   }
 
-#if LOG_COMPRESS
+#if LOG_COMPRESS == 2
+  lzStartFile();
+#elif LOG_COMPRESS == 1
   if (!gzLog.begin(&canLogFile, (uint32_t)time(nullptr))) {
     Serial.println("Нет памяти под буферы сжатия — лог не открыт");
     canLogFile.close();
@@ -2196,7 +2414,7 @@ void canTask(void* param) {
   if (err == ESP_OK) err = twai_start();
   if (err != ESP_OK) {
     canRunning = false;
-    Serial.printf("[CAN task] ОШИБКА запуска TWAI (%s) на %s — приём CAN не работает\n",
+    errLog("CAN: ОШИБКА запуска TWAI (%s) на %s — приём CAN не работает",
                   esp_err_to_name(err), canBitrateLabelRu(canBitrate));
     vTaskDelete(NULL);
   }
@@ -2214,7 +2432,10 @@ void canTask(void* param) {
       entry.flags = (message.extd ? LOGF_EXTD : 0) | (message.rtr ? LOGF_RTR : 0);
       memset(entry.data, 0, sizeof(entry.data));
       if (!message.rtr) memcpy(entry.data, message.data, entry.dlc);
-      xQueueSend(canQueue, &entry, 0);
+      if (xQueueSend(canQueue, &entry, 0) != pdTRUE) canDroppedTotal++;
+      canFramesTotal++;
+      UBaseType_t qw = uxQueueMessagesWaiting(canQueue);
+      if (qw > canQueueMax) canQueueMax = qw;
       lastCanFrameMs = millis();
 
       // Живая трансляция сырых данных наблюдаемого ID по BLE — отдельно
@@ -2285,9 +2506,9 @@ bool logWriteFrame(const CanLogEntry& entry) {
 
   line[n++] = '\r'; line[n++] = '\n';   // как println (буфер с запасом)
   logWrite(line, n);
-#if LOG_COMPRESS
+#if LOG_COMPRESS == 1
   if (millis() - gzLastSync >= LOG_GZ_SYNC_MS) logSync();
-#else
+#elif LOG_COMPRESS == 0
   if (++logSinceFlush >= 10) {
     logSync();
     logSinceFlush = 0;
@@ -2340,7 +2561,8 @@ void sdTask(void* param) {
 #endif
       if (canLogFile) {
         char m[80];
-        int k = snprintf(m, sizeof(m), "# %lu ===== %s =====\n", (unsigned long)millis(), why);
+        int k = snprintf(m, sizeof(m), "# %lu ===== %s ===== dropped=%lu\n", (unsigned long)millis(), why,
+                         (unsigned long)canDroppedTotal);
         logWrite(m, k);
         logClose();
       }
@@ -2363,7 +2585,7 @@ void sdTask(void* param) {
         }
         pending.push_back(entry);
         if (millis() - timeWaitStart < CAN_TIME_WAIT_MS && pending.size() < PENDING_MAX) continue;
-        Serial.println("[SD task] Кадр времени не пришёл — лог пойдёт в /no-rtc");
+        errLog("Время: кадр 0x6B2 не пришёл за %d мс — лог пойдёт в /no-rtc", CAN_TIME_WAIT_MS);
       } else if (timeWaiting) {
         pending.push_back(entry);          // время только что пришло — текущий кадр тоже в пачку
       }
@@ -2464,7 +2686,11 @@ void ledTask(void* param) {
   for (;;) {
     uint32_t used = 0;
     if (!ledStopped) {
+#if LOG_COMPRESS == 2
+      bool error   = !sdMounted || !canRunning || logOpenFailed || lzFailed;
+#else
       bool error   = !sdMounted || !canRunning || logOpenFailed;
+#endif
       bool partial = !timeValid || rtcOscStopped;
       bool portal  = WiFi.softAPgetStationNum() > 0;
       bool canData = lastCanFrameMs != 0 && (millis() - lastCanFrameMs) < 1000;
@@ -2533,10 +2759,20 @@ void setup() {
   loadUiLanguage();
   loadCanBitrate();   // до setupSD — скорость попадает в маркер BOOT в логе
   setupSD();
+  errFlushPending();
+  {
+    esp_reset_reason_t rr = esp_reset_reason();
+    if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT ||
+        rr == ESP_RST_WDT || rr == ESP_RST_BROWNOUT || rr == ESP_RST_UNKNOWN)
+      errLog("Перезагрузка по сбою: %s", resetReasonStr(rr));
+  }
   setupWiFiAndWebServer();
   setupBLESync();
 
   xTaskCreatePinnedToCore(canTask, "canTask", 4096, NULL, 2, NULL, 0);
+#if LOG_COMPRESS == 2
+  lzSetup();
+#endif
   xTaskCreatePinnedToCore(sdTask,  "sdTask",  8192, NULL, 1, NULL, 1);
 #if RGB_LED_ENABLE
   ledWrite(0, 0, 0);
@@ -2586,10 +2822,42 @@ void goToSleepUntilAccOn() {
   // пробуждении и начнёт заново с setup()
 }
 
+// Раз в минуту: строка статистики в Serial; появились потери кадров —
+// запись в errors.log (из canTask в карту не пишем: он не должен ждать SD)
+void statsLoop() {
+  static uint32_t last = 0, lastFrames = 0, lastDropped = 0, lastIn = 0, lastOut = 0;
+  uint32_t now = millis();
+  if (now - last < STATS_PERIOD_MS) return;
+  float sec = (now - last) / 1000.0f;
+  uint32_t fr = canFramesTotal, dr = canDroppedTotal, in = logInTotal, out = logOutTotal;
+  uint32_t qPct = canQueueMax * 100 / CAN_QUEUE_LEN;
+#if LOG_COMPRESS == 2
+  uint32_t sbPct = lzSbMax * 100 / (32 * 1024);
+#else
+  uint32_t sbPct = 0;
+#endif
+  if (last != 0 && fr != lastFrames) {   // шина молчит — строку не печатаем
+    Serial.printf("[STAT] кадров %.0f/с, лог %.1f КБ/с, на карту %.1f КБ/с (сжатие %.1fx), "
+                  "буфер кодера макс %u%%, очередь CAN макс %u%%, потеряно %lu (всего %lu)\n",
+                  (fr - lastFrames) / sec, (in - lastIn) / 1024.0f / sec, (out - lastOut) / 1024.0f / sec,
+                  (out - lastOut) ? (float)(in - lastIn) / (out - lastOut) : 0.0f,
+                  (unsigned)sbPct, (unsigned)qPct, (unsigned long)(dr - lastDropped), (unsigned long)dr);
+  }
+  if (last != 0 && dr != lastDropped)
+    errLog("CAN: потеряно %lu кадров за %.0f с (очередь заполнялась до %u%%, буфер кодера до %u%%)",
+           (unsigned long)(dr - lastDropped), sec, (unsigned)qPct, (unsigned)sbPct);
+  canQueueMax = 0;
+#if LOG_COMPRESS == 2
+  lzSbMax = 0;
+#endif
+  last = now; lastFrames = fr; lastDropped = dr; lastIn = in; lastOut = out;
+}
+
 void loop() {
   webServer.handleClient();
   ArduinoOTA.handle();
   rtcServiceLoop();   // отложенная запись времени во внешние часы
+  statsLoop();        // строка [STAT] в Serial, потери кадров — в errors.log
 
   // Не уходим в сон, пока идёт заливка прошивки (иначе "кирпич"),
   // пока пользуются веб-порталом и пока подключён комп по USB
