@@ -107,7 +107,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.2.0"
+#define FW_VERSION   "2.2.1"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -240,7 +240,8 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 // LZMA: словарь. 64 КБ — оптимум для CAN-логов (больше почти не даёт),
 // 32 КБ — ~7.7 раза и чуть меньше памяти
 #define LOG_LZMA_DICT    (64UL * 1024UL)
-// gzip: #define LOG_GZ_DEPTH     4
+// gzip (LOG_COMPRESS 1): глубина поиска повторов
+#define LOG_GZ_DEPTH     4
 // Раз в столько мс данные "проталкиваются" на карту (sync flush): при сбое
 // питания теряется не больше этого интервала, файл распаковывается до обрыва
 #define LOG_GZ_SYNC_MS   1000
@@ -485,7 +486,7 @@ static void errWriteLine(const String& line) {
 void errLog(const char* fmt, ...) {
   char msg[200];
   va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
-  char ts[24] = "время неизвестно";
+  char ts[48] = "время неизвестно";   // UTF-8: кириллица по 2 байта
   if (timeValid) {
     DateTime n((uint32_t)time(nullptr));
     snprintf(ts, sizeof(ts), "%04d-%02d-%02d %02d:%02d:%02d", n.year(), n.month(), n.day(),
