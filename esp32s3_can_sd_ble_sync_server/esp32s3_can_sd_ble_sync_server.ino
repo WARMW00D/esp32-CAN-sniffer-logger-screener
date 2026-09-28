@@ -107,7 +107,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.2.1"
+#define FW_VERSION   "2.2.2"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -1750,7 +1750,6 @@ void setupWiFiAndWebServer() {
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, WIFI_AP_HIDDEN);
   WiFi.setTxPower(WIFI_TX_POWER);   // после softAP — до старта мощность не применяется
-  WiFi.setTxPower(WIFI_POWER_8_5dBm); // снижено по запросу — экономия/меньше нагрев
 
   Serial.print("Веб-страница установки времени: http://");
   Serial.println(WiFi.softAPIP());
