@@ -111,7 +111,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.0.0"` (WROOM) / `"2.0.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.0.1"` (WROOM) / `"2.0.1"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -140,7 +140,7 @@ The on-board RGB LED (WS2812, GPIO48) flashes once per second while the sniffer 
 Connect to the access point and open `http://192.168.4.1`.
 
 - `/` — date/time with its source and the detected RTC, "Phone time" button, CAN bitrate, firmware version
-- `/logs` — log folders by date; single-file download, several folders as one TAR archive, or recursive deletion of the selected folders (with confirmation; the folder currently being written is protected)
+- `/logs` — log folders by date, collapsed; press **+** to see a folder's files (count and total size are shown right away); single-file download, several folders as one TAR archive, or recursive deletion of the selected folders (with confirmation; the folder currently being written is protected)
 - If the SD card can't be mounted, the home page offers **Format card as FAT32** (password-protected like `/update`). Cards of 64 GB and larger usually come formatted as exFAT, which the Arduino-ESP32 core does not support. A mounted card is never formatted — use folder deletion on `/logs` instead. You can also format large cards as FAT32 on a PC with guiformat or Rufus (the standard Windows formatter refuses FAT32 above 32 GB).
 - `/update` — firmware upload from the browser (Basic Auth: `OTA_WEB_USER` / `OTA_PASSWORD`)
 
@@ -290,3 +290,9 @@ The ESP32-S3 has no IRAM shortage, so recording and aiming could be merged into 
 - **Power:** don't feed the sniffer from the head unit's USB port (it acts as a USB host and keeps the sniffer awake). Use a DC-DC with low quiescent current, a fuse and a TVS diode on the input.
 - **Antenna:** the Super Mini has a chip antenna on the board; keep it away from metal, or the portal and BLE range drop sharply.
 - **Change the passwords** (`AP_PASSWORD`, `OTA_PASSWORD`) before installing.
+
+---
+
+## Credits
+
+Developed with the assistance of **Claude** (Anthropic): firmware, tools, wiring diagrams and documentation were written in collaboration with the AI assistant; hardware, testing in the car and design decisions — by the author.

@@ -92,7 +92,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "1.4.0"
+#define FW_VERSION   "2.0.1"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -193,6 +193,20 @@ volatile uint32_t lastCanFrameMs = 0;   // время последнего пр�
 // На I-CAN это ~1 МБ в минуту, 4 МБ — около 4 минут записи на файл.
 // При смене даты (поездка через полночь) следующий файл уходит в новую папку.
 #define LOG_MAX_BYTES   (4UL * 1024UL * 1024UL)
+
+// ---------- Сжатие лога ----------
+// 1 — файлы пишутся сразу сжатыми: can_log_NNNN.txt.gz (обычный gzip,
+//     открывается 7-Zip/WinRAR/gzip/Python). Текстовый CAN-лог сжимается
+//     примерно в 3–3.5 раза. LOG_MAX_BYTES считается по СЖАТОМУ размеру —
+//     файлы того же размера, но данных в каждом в ~3.5 раза больше.
+// 0 — как раньше, простой текст can_log_NNNN.txt.
+#define LOG_COMPRESS     1
+// Сколько повторов проверять при поиске (1 — минимум CPU, 4 — лучше сжатие
+// почти даром, 8+ — ещё немного лучше и медленнее)
+#define LOG_GZ_DEPTH     4
+// Раз в столько мс данные "проталкиваются" на карту (sync flush): при сбое
+// питания теряется не больше этого интервала, файл распаковывается до обрыва
+#define LOG_GZ_SYNC_MS   1000
 
 // ---------- Режим CAN ----------
 // 1 = машина (LISTEN_ONLY), 0 = стенд (NORMAL). См. шапку.
@@ -689,6 +703,16 @@ const char* PAGE_STYLE =
   "button.lang{background:#c62828;border-color:#c62828;color:#fff;font-weight:bold;}"
   "button.lang:hover{background:#e53935;border-color:#e53935;color:#fff;}"
   "ul{list-style:none;padding-left:0;}"
+  // Сворачиваемые папки на странице логов: "+" / "−" вместо стрелки
+  ".fold{display:flex;align-items:flex-start;gap:8px;margin:6px 0;}"
+  ".fold input{margin-top:5px;}"
+  "details{flex:1;}"
+  "summary{cursor:pointer;list-style:none;font-weight:bold;}"
+  "summary::-webkit-details-marker{display:none;}"
+  "summary::before{content:'+';display:inline-block;width:1.2em;color:#4caf50;font-weight:bold;}"
+  "details[open] summary::before{content:'\\2212';}"
+  "details ul{margin:6px 0 10px 1.2em;}"
+  ".meta{font-weight:normal;color:#9a9a9a;}"
   "li{padding:2px 0;border-bottom:1px solid #222;}"
   "hr{border-color:#333;}"
   "</style>";
@@ -1073,14 +1097,26 @@ void handleDelete() {
     TR("к списку логов", "back to logs") + "</a></p></body></html>");
 }
 
+// Размер для людей: 512 Б / 12.3 КБ / 4.0 МБ
+String humanSize(uint64_t b) {
+  char buf[24];
+  if (b < 1024)                 snprintf(buf, sizeof(buf), "%u %s", (unsigned)b, uiEn ? "B" : "Б");
+  else if (b < 1024ULL * 1024)  snprintf(buf, sizeof(buf), "%.1f %s", b / 1024.0, uiEn ? "KB" : "КБ");
+  else if (b < (1024ULL << 20))  snprintf(buf, sizeof(buf), "%.1f %s", b / 1048576.0, uiEn ? "MB" : "МБ");
+  else                          snprintf(buf, sizeof(buf), "%.2f %s", b / 1073741824.0, uiEn ? "GB" : "ГБ");
+  return String(buf);
+}
+
 void handleLogs() {
   touchWeb();
   String html = htmlHead(TR("Логи CAN-сниффера", "CAN sniffer logs")) +
                  "<h2>" + TR("Логи по датам", "Logs by date") + "</h2>"
                  "<p><a href='/'>&larr; " + TR("на главную", "home") + "</a></p>"
                  "<form action='/download-tar' method='GET'>"
-                 "<p>" + TR("Отметьте папки, которые хотите скачать одним TAR-архивом:",
-                            "Select folders to download as a single TAR archive:") + "</p>";
+                 "<p>" + TR("Отметьте папки галочкой, чтобы скачать их одним TAR-архивом или удалить. "
+                            "Нажмите «+», чтобы увидеть файлы папки.",
+                            "Tick folders to download them as one TAR archive or delete them. "
+                            "Press \"+\" to see the files in a folder.") + "</p>";
 
   File root = LOGFS.open("/");
   if (!root || !root.isDirectory()) {
@@ -1100,25 +1136,24 @@ void handleLogs() {
       if (!folderName.startsWith("/")) folderName = "/" + folderName;
       foundFolder = true;
 
-      html += "<h3><label><input type='checkbox' name='folder' value='" + folderName +
-              "'> " + folderName + "</label>";
-      if (active.length() && folderName == active)
-        html += " <small>(" + TR("идёт запись", "recording") + ")</small>";
-      html += "</h3><ul>";
-
+      // Сначала собираем список файлов (для счётчика и размера в заголовке),
+      // потом выводим папку свёрнутой: содержимое раскрывается по "+"
+      String items;
+      uint32_t nFiles = 0;
+      uint64_t total = 0;
       File folder = LOGFS.open(folderName);
       File fileEntry = folder.openNextFile();
-      bool folderHasFiles = false;
       while (fileEntry) {
         if (!fileEntry.isDirectory()) {
           String fileName = String(fileEntry.name());
           if (!fileName.startsWith("/")) fileName = "/" + fileName;
           String fullPath = folderName + "/" + fileName.substring(fileName.lastIndexOf('/') + 1);
           size_t sizeBytes = fileEntry.size();
-
-          html += "<li><a href='/download?file=" + fullPath + "'>" +
-                  fullPath + "</a> (" + String(sizeBytes) + " " + TR("байт", "bytes") + ")</li>";
-          folderHasFiles = true;
+          items += "<li><a href='/download?file=" + fullPath + "'>" +
+                   fullPath.substring(fullPath.lastIndexOf('/') + 1) + "</a> <span class='meta'>(" +
+                   humanSize(sizeBytes) + ")</span></li>";
+          nFiles++;
+          total += sizeBytes;
           foundAny = true;
         }
         fileEntry.close();
@@ -1126,10 +1161,15 @@ void handleLogs() {
       }
       folder.close();
 
-      if (!folderHasFiles) {
-        html += "<li><i>" + TR("пусто", "empty") + "</i></li>";
-      }
-      html += "</ul>";
+      html += "<div class='fold'><input type='checkbox' name='folder' value='" + folderName +
+              "' title='" + TR("выбрать папку", "select folder") + "'><details><summary>" + folderName +
+              " <span class='meta'>— " + String(nFiles) + " " + TR("файл(ов)", "file(s)") + ", " +
+              humanSize(total);
+      if (active.length() && folderName == active)
+        html += ", " + TR("идёт запись", "recording");
+      html += "</span></summary><ul>" +
+              (nFiles ? items : "<li><i>" + TR("пусто", "empty") + "</i></li>") +
+              "</ul></details></div>";
     }
     dateEntry.close();
     dateEntry = root.openNextFile();
@@ -1750,6 +1790,235 @@ void setupBLESync() {
 // SD
 // =====================================================================
 // Следующий свободный номер can_log_NNNN.txt в папке
+// ============================================================================
+// GzLog — потоковое gzip-сжатие лога "на лету", без внешних библиотек.
+// Минимальное сжатие: LZ77 с одним кандидатом из хеш-таблицы + фиксированные
+// коды Хаффмана (deflate BTYPE=01). Быстро и мало памяти (~45 КБ), а текстовый
+// CAN-лог всё равно сжимается в разы — строки очень похожи друг на друга.
+// Выход — стандартный .gz: распаковывается gzip/7-Zip/WinRAR/Python.
+// sync() делает "sync flush": всё записанное до этого момента можно
+// распаковать, даже если файл не будет закрыт штатно (без контрольной суммы
+// в конце распаковщики ругаются на обрыв, но данные отдают).
+// ============================================================================
+
+static void* gzAlloc(size_t n) {
+  void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  return p ? p : malloc(n);
+}
+
+template <class OUT>   // OUT: size_t write(const uint8_t*, size_t)
+class GzLog {
+public:
+  static const uint32_t WIN   = 16384;   // окно поиска повторов
+  static const uint32_t CHUNK = 16384;   // сколько копим перед сжатием
+  static const uint32_t HBITS = 12;      // хеш-таблица 4096 позиций
+  static const uint32_t OBUF  = 4096;
+  static const int      DEPTH = LOG_GZ_DEPTH;  // сколько кандидатов проверять (1 — минимум)
+
+  bool begin(OUT* out, uint32_t mtime = 0) {
+    if (!buf) {
+      // ~130 КБ: крупные буферы — в PSRAM, если она есть
+      buf  = (uint8_t*)gzAlloc(WIN + CHUNK);
+      head = (uint32_t*)gzAlloc(sizeof(uint32_t) << HBITS);
+      prev = (uint32_t*)gzAlloc(sizeof(uint32_t) * WIN);
+      obuf = (uint8_t*)malloc(OBUF);
+      if (!buf || !head || !prev || !obuf) return false;
+      for (uint32_t n = 0; n < 256; n++) {           // таблица CRC32
+        uint32_t c = n;
+        for (int k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+        crcTab[n] = c;
+      }
+    }
+    o = out; crc = 0xFFFFFFFFu; inSize = 0; outSize = 0;
+    base = 0; hist = 0; pend = 0; bitBuf = 0; bitCnt = 0; olen = 0;
+    memset(head, 0xFF, sizeof(uint32_t) << HBITS);   // 0xFFFFFFFF = пусто
+    const uint8_t hdr[10] = {0x1F, 0x8B, 8, 0, (uint8_t)mtime, (uint8_t)(mtime >> 8),
+                             (uint8_t)(mtime >> 16), (uint8_t)(mtime >> 24), 4, 0xFF};
+    putBytes(hdr, 10);
+    blockStart();
+    return true;
+  }
+
+  // Добавить данные (строку лога)
+  void write(const uint8_t* d, size_t n) {
+    for (size_t i = 0; i < n; i++) crc = crcTab[(crc ^ d[i]) & 0xFF] ^ (crc >> 8);
+    inSize += n;
+    while (n) {
+      size_t room = CHUNK - pend;
+      size_t k = n < room ? n : room;
+      memcpy(buf + hist + pend, d, k);
+      pend += k; d += k; n -= k;
+      if (pend == CHUNK) compressPending();
+    }
+  }
+
+  // Sync flush: всё записанное доступно для распаковки
+  void sync() {
+    compressPending();
+    putHuff(256);                        // конец текущего блока
+    putBits(0, 1); putBits(0, 2);        // пустой stored-блок
+    alignByte();
+    const uint8_t s[4] = {0, 0, 0xFF, 0xFF};
+    putBytes(s, 4);
+    flushOut();
+    blockStart();
+  }
+
+  // Завершить поток: финальный блок + CRC32 + размер
+  void finish() {
+    compressPending();
+    putHuff(256);
+    putBits(1, 1); putBits(1, 2); putHuff(256);   // пустой финальный блок
+    alignByte();
+    uint32_t c = crc ^ 0xFFFFFFFFu;
+    const uint8_t t[8] = {(uint8_t)c, (uint8_t)(c >> 8), (uint8_t)(c >> 16), (uint8_t)(c >> 24),
+                          (uint8_t)inSize, (uint8_t)(inSize >> 8), (uint8_t)(inSize >> 16), (uint8_t)(inSize >> 24)};
+    putBytes(t, 8);
+    flushOut();
+  }
+
+  uint32_t compressedBytes() const { return outSize + olen + pend / 4; }  // оценка с учётом несжатого хвоста
+  uint32_t rawBytes() const { return inSize; }
+
+private:
+  OUT* o = nullptr;
+  uint8_t* buf = nullptr; uint32_t* head = nullptr; uint32_t* prev = nullptr; uint8_t* obuf = nullptr;
+  uint32_t crcTab[256];
+  uint32_t crc = 0, inSize = 0, outSize = 0;
+  uint32_t base = 0;    // абсолютная позиция buf[0]
+  uint32_t hist = 0;    // байт истории в начале buf
+  uint32_t pend = 0;    // несжатых байт после истории
+  uint32_t bitBuf = 0; int bitCnt = 0; uint32_t olen = 0;
+
+  static inline uint32_t hash3(const uint8_t* p) {
+    return ((p[0] << 16 | p[1] << 8 | p[2]) * 2654435761u) >> (32 - HBITS);
+  }
+
+  void compressPending() {
+    if (!pend) return;
+    uint32_t i = hist, end = hist + pend;
+    while (i < end) {
+      uint32_t best = 0, dist = 0;
+      if (end - i >= 3) {
+        uint32_t h = hash3(buf + i);
+        uint32_t cand = head[h];
+        uint32_t absPos = base + i;
+        head[h] = absPos;
+        prev[absPos % WIN] = cand;
+        uint32_t maxL = end - i; if (maxL > 258) maxL = 258;
+        for (int t = 0; t < DEPTH && cand != 0xFFFFFFFFu && cand >= base && absPos - cand <= WIN - 1; t++) {
+          const uint8_t* a = buf + (cand - base);
+          const uint8_t* b = buf + i;
+          uint32_t L = 0;
+          while (L < maxL && a[L] == b[L]) L++;
+          if (L > best) { best = L; dist = absPos - cand; if (L == maxL) break; }
+          cand = prev[cand % WIN];
+        }
+        if (best < 3) best = 0;
+      }
+      if (best) {
+        putLength(best); putDist(dist);
+        // занести в хеш позиции внутри совпадения (дёшево и улучшает сжатие)
+        for (uint32_t k = 1; k < best && i + k + 2 < end; k++) {
+          uint32_t hh = hash3(buf + i + k);
+          prev[(base + i + k) % WIN] = head[hh];
+          head[hh] = base + i + k;
+        }
+        i += best;
+      } else {
+        putHuff(buf[i]); i++;
+      }
+    }
+    // Сдвиг: оставить последние WIN байт как историю
+    uint32_t total = hist + pend;
+    uint32_t keep = total < WIN ? total : WIN;
+    memmove(buf, buf + total - keep, keep);
+    base += total - keep;
+    hist = keep; pend = 0;
+  }
+
+  // ---- битовый вывод (LSB-first) ----
+  inline void putBits(uint32_t v, int n) {
+    bitBuf |= v << bitCnt; bitCnt += n;
+    while (bitCnt >= 8) { putByte(bitBuf & 0xFF); bitBuf >>= 8; bitCnt -= 8; }
+  }
+  inline void putRev(uint32_t code, int n) {       // код Хаффмана: старшим битом вперёд
+    uint32_t r = 0;
+    for (int k = 0; k < n; k++) { r = (r << 1) | (code & 1); code >>= 1; }
+    putBits(r, n);
+  }
+  void putHuff(uint32_t sym) {                      // фиксированные коды литералов/длин
+    if (sym < 144)      putRev(0x30 + sym, 8);
+    else if (sym < 256) putRev(0x190 + sym - 144, 9);
+    else if (sym < 280) putRev(sym - 256, 7);
+    else                putRev(0xC0 + sym - 280, 8);
+  }
+  void putLength(uint32_t L) {
+    static const uint16_t lb[29] = {3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258};
+    static const uint8_t  le[29] = {0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0};
+    int c = 28; while (lb[c] > L) c--;
+    putHuff(257 + c);
+    if (le[c]) putBits(L - lb[c], le[c]);
+  }
+  void putDist(uint32_t D) {
+    static const uint16_t db[30] = {1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
+    static const uint8_t  de[30] = {0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
+    int c = 29; while (db[c] > D) c--;
+    putRev(c, 5);
+    if (de[c]) putBits(D - db[c], de[c]);
+  }
+  void blockStart() { putBits(0, 1); putBits(1, 2); }   // не финальный, фиксированный Хаффман
+  void alignByte() { if (bitCnt) { putByte(bitBuf & 0xFF); bitBuf = 0; bitCnt = 0; } }
+  inline void putByte(uint8_t b) { obuf[olen++] = b; if (olen == OBUF) flushOut(); }
+  void putBytes(const uint8_t* d, size_t n) { for (size_t i = 0; i < n; i++) putByte(d[i]); }
+  void flushOut() { if (olen) { o->write(obuf, olen); outSize += olen; olen = 0; } }
+};
+
+#if LOG_COMPRESS
+GzLog<File> gzLog;
+uint32_t gzLastSync = 0;
+bool     gzDirty = false;   // есть данные после последнего sync
+#endif
+
+// Единые функции записи в лог: сжатие или простой текст
+void logWrite(const char* d, size_t n) {
+#if LOG_COMPRESS
+  gzLog.write((const uint8_t*)d, n);
+  gzDirty = true;
+#else
+  canLogFile.write((const uint8_t*)d, n);
+#endif
+  currentLogBytes += n;
+}
+
+// Размер файла для ротации: сжатый (что реально лежит на карте)
+uint32_t logFileBytes() {
+#if LOG_COMPRESS
+  return gzLog.compressedBytes();
+#else
+  return currentLogBytes;
+#endif
+}
+
+// Протолкнуть данные на карту
+void logSync() {
+#if LOG_COMPRESS
+  if (gzDirty) { gzLog.sync(); gzDirty = false; }
+  gzLastSync = millis();
+#endif
+  canLogFile.flush();
+}
+
+// Закрыть файл штатно (для .gz — с контрольной суммой в конце)
+void logClose() {
+#if LOG_COMPRESS
+  gzLog.finish();
+  gzDirty = false;
+#endif
+  canLogFile.flush();
+  canLogFile.close();
+}
+
 uint32_t nextLogIndex(const String& folder) {
   uint32_t maxIdx = 0;
   File dir = LOGFS.open(folder);
@@ -1758,8 +2027,8 @@ uint32_t nextLogIndex(const String& folder) {
   while (e) {
     String n = String(e.name());
     if (n.lastIndexOf('/') != -1) n = n.substring(n.lastIndexOf('/') + 1);
-    if (n.startsWith("can_log_") && n.endsWith(".txt")) {
-      uint32_t idx = (uint32_t)n.substring(8, n.length() - 4).toInt();
+    if (n.startsWith("can_log_") && (n.endsWith(".txt") || n.endsWith(".txt.gz"))) {
+      uint32_t idx = (uint32_t)n.substring(8, n.indexOf('.')).toInt();
       if (idx > maxIdx) maxIdx = idx;
     }
     e.close();
@@ -1775,8 +2044,9 @@ bool openNewLogFile(const String& prevName) {
   currentDateFolder = dateFolderName(nowTime());
   if (!LOGFS.exists(currentDateFolder)) LOGFS.mkdir(currentDateFolder);
 
-  char name[24];
-  snprintf(name, sizeof(name), "can_log_%04lu.txt", (unsigned long)nextLogIndex(currentDateFolder));
+  char name[28];
+  snprintf(name, sizeof(name), LOG_COMPRESS ? "can_log_%04lu.txt.gz" : "can_log_%04lu.txt",
+           (unsigned long)nextLogIndex(currentDateFolder));
   currentLogName = name;
   String logPath = currentDateFolder + "/" + currentLogName;
 
@@ -1788,20 +2058,30 @@ bool openNewLogFile(const String& prevName) {
     return false;
   }
 
+#if LOG_COMPRESS
+  if (!gzLog.begin(&canLogFile, (uint32_t)time(nullptr))) {
+    Serial.println("Нет памяти под буферы сжатия — лог не открыт");
+    canLogFile.close();
+    return false;
+  }
+  gzLastSync = millis();
+#endif
+
   // Каждый файл самодостаточен: в первой строке версия и скорость шины
+  char hdr[200];
   int n;
   if (prevName.length() == 0) {
-    n = canLogFile.printf("# %lu ===== BOOT / SYNC MARK ===== fw=%s build=\"%s\" reset=%s can_bps=%lu time=\"%s\" rtc=%s\n",
+    n = snprintf(hdr, sizeof(hdr), "# %lu ===== BOOT / SYNC MARK ===== fw=%s build=\"%s\" reset=%s can_bps=%lu time=\"%s\" rtc=%s\n",
                           (unsigned long)millis(), FW_VERSION, FW_BUILD,
                           resetReasonStr(esp_reset_reason()), (unsigned long)canBitrate,
                           timeValid ? timeSource : "none", rtcName());
   } else {
-    n = canLogFile.printf("# %lu ===== CONTINUED from %s ===== fw=%s can_bps=%lu\n",
+    n = snprintf(hdr, sizeof(hdr), "# %lu ===== CONTINUED from %s ===== fw=%s can_bps=%lu\n",
                           (unsigned long)millis(), prevName.c_str(), FW_VERSION,
                           (unsigned long)canBitrate);
   }
-  if (n > 0) currentLogBytes += n;
-  canLogFile.flush();
+  if (n > 0) logWrite(hdr, n);
+  logSync();
   Serial.println("Лог пишется в: " + logPath);
   return true;
 }
@@ -1984,21 +2264,26 @@ bool logWriteFrame(const CanLogEntry& entry) {
     }
   }
 
-  canLogFile.println(line);
-  currentLogBytes += n + 2;          // println добавляет \r\n
+  line[n++] = '\r'; line[n++] = '\n';   // как println (буфер с запасом)
+  logWrite(line, n);
+#if LOG_COMPRESS
+  if (millis() - gzLastSync >= LOG_GZ_SYNC_MS) logSync();
+#else
   if (++logSinceFlush >= 10) {
-    canLogFile.flush();
+    logSync();
     logSinceFlush = 0;
   }
+#endif
 
   // Ротация: файл дорос до лимита — закрываем; следующий откроется на
   // следующем кадре. Занимает единицы мс, кадры ждут в canQueue.
-  if (currentLogBytes >= LOG_MAX_BYTES) {
+  if (logFileBytes() >= LOG_MAX_BYTES) {
     String prev = currentLogName;
-    canLogFile.printf("# %lu ===== ROTATE (%lu bytes) =====\n",
-                      (unsigned long)millis(), (unsigned long)currentLogBytes);
-    canLogFile.flush();
-    canLogFile.close();
+    char m[80];
+    int k = snprintf(m, sizeof(m), "# %lu ===== ROTATE (%lu bytes) =====\n",
+                     (unsigned long)millis(), (unsigned long)currentLogBytes);
+    logWrite(m, k);
+    logClose();
     logSinceFlush = 0;
     logPendingPrev = prev;
   }
@@ -2017,7 +2302,11 @@ void sdTask(void* param) {
 #endif
 
   for (;;) {
-    if (xQueueReceive(canQueue, &entry, portMAX_DELAY) != pdTRUE) continue;
+    if (xQueueReceive(canQueue, &entry, pdMS_TO_TICKS(500)) != pdTRUE) {
+      // Шина замолчала — не держать данные в буфере сжатия
+      if (canLogFile) logSync();
+      continue;
+    }
 
     // Сигнал на выключение — обрабатываем ОТДЕЛЬНО и ПЕРВЫМ, не пытаясь
     // собрать из него строку лога (dlc/data тут не valid CAN-данные)
@@ -2031,9 +2320,10 @@ void sdTask(void* param) {
       pending.clear();
 #endif
       if (canLogFile) {
-        canLogFile.printf("# %lu ===== %s =====\n", (unsigned long)millis(), why);
-        canLogFile.flush();
-        canLogFile.close();
+        char m[80];
+        int k = snprintf(m, sizeof(m), "# %lu ===== %s =====\n", (unsigned long)millis(), why);
+        logWrite(m, k);
+        logClose();
       }
       setActiveLogFolder("");
       if (logSessionStarted) Serial.printf("[SD task] Лог закрыт штатно (%s)\n", why);
