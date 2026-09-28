@@ -18,8 +18,10 @@ Arduino IDE requires each sketch to live in a folder with the same name:
 ```
 esp32s3_wroom_can_sd_ble_sync_server/
     esp32s3_wroom_can_sd_ble_sync_server.ino    — CAN sniffer, ESP32-S3-WROOM-1 CAM board
+    src/lzma/                                   — LZMA encoder (LZMA SDK, public domain)
 esp32s3_can_sd_ble_sync_server/
     esp32s3_can_sd_ble_sync_server.ino          — CAN sniffer, ESP32-S3 Super Mini
+    src/lzma/                                   — LZMA encoder (LZMA SDK, public domain)
 esp32cam_aithinker_video_ble_sync_client/
     esp32cam_aithinker_video_ble_sync_client.ino — camera, recording mode
 esp32cam_aithinker_aiming_stream/
@@ -33,7 +35,7 @@ docs/
     camera_aithinker.svg, camera_s3_ov5640.svg   — wiring diagrams
 tools/
     can_time_decode.py                           — date/time and odometer from CAN logs
-    log_unpack.py                                — unpack .txt.gz logs (also truncated ones), join a folder
+    log_unpack.py                                — unpack .txt.lzma / .txt.gz logs (also truncated ones), join a folder
 README.md
 README_ru.md
 ```
@@ -105,13 +107,13 @@ Core **Arduino-ESP32 3.x**, board **ESP32S3 Dev Module**, USB Mode **Hardware CD
 
 Choosing the wrong PSRAM type gives `PSRAM chip is not connected`. Both partition schemes have two app slots for OTA. The partition scheme can only be changed by flashing over USB; do this once, then update over Wi-Fi. On the WROOM board, the "USB wakes/keeps awake" logic works through the native **USB** port, not the **COM** port.
 
-Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is part of the core.
+Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is part of the core. The LZMA encoder is shipped with the sketch in `src/lzma/` and compiled automatically — nothing to install.
 
 ### Build options (`#define` at the top of the sketch)
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.0.1"` (WROOM) / `"2.0.1"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.2.0"` (WROOM) / `"2.2.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -119,10 +121,11 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 | `CAN_TIME_MAX_JUMP_S` | `0` | Protection against a reset car clock: 0 = trust the car fully; >0 = if the sniffer already has valid time and the car differs by more than this, the car time is ignored. Car time earlier than the firmware build date is always ignored |
 | `CAN_TIME_WAIT_MS` | `4500` | How long to wait for the time frame before opening the first log file (frames are buffered meanwhile) |
 | `CAN_TIME_CONFIRM_FRAMES` | `3` | Car time is accepted only after this many consecutive 0x6B2 frames agree with each other (±2 s); out-of-range values and impossible dates reset the series — protects against GPS glitches |
-| `LOG_MAX_BYTES` | `4 MB` | Log rotation size — of the file on the card, i.e. compressed if `LOG_COMPRESS 1` (a new file is also started on every boot) |
-| `LOG_COMPRESS` | `1` | Write logs gzip-compressed on the fly (`.txt.gz`, ~3.5× smaller); 0 = plain `.txt` |
-| `LOG_GZ_DEPTH` | `4` | Match search depth: 1 = least CPU, 4 = better ratio almost for free |
-| `LOG_GZ_SYNC_MS` | `1000` | Compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
+| `LOG_MAX_BYTES` | `4 MB` | Log rotation size — of the file on the card, i.e. compressed (a new file is also started on every boot) |
+| `LOG_COMPRESS` | `2` | Compression on the fly: 2 = LZMA (`.txt.lzma`, ~8× smaller, ~1 MB PSRAM), 1 = gzip (`.txt.gz`, ~3.5×, ~130 KB), 0 = plain `.txt` |
+| `LOG_LZMA_DICT` | `64 KB` | LZMA dictionary; 64 KB is the sweet spot for CAN logs (32 KB ≈ 7.7×) |
+| `LOG_GZ_DEPTH` | `4` | gzip only — match search depth: 1 = least CPU, 4 = better ratio almost for free |
+| `LOG_GZ_SYNC_MS` | `1000` | gzip only — compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
 | `WIFI_TX_POWER` | `WIFI_POWER_8_5dBm` | Wi-Fi transmit power: lower means smaller current spikes, at the cost of range and portal speed |
 | `AP_SSID` / `AP_PASSWORD` | `S3-CAN-Sniffer-Setup` / `canlogger123` | Portal access point |
@@ -182,11 +185,25 @@ With `CAN_TIME_SYNC 2` the car's clock is authoritative: after disconnecting the
 
 `tools/can_time_decode.py` decodes 0x6B2 from existing logs and maps sniffer `millis` (and camera frame names) to wall-clock time.
 
+### Diagnostics
+
+**`[STAT]` line in Serial** once a minute while the bus is active:
+
+```
+[STAT] кадров 1650/с, лог 64.2 КБ/с, на карту 7.7 КБ/с (сжатие 8.3x), буфер кодера макс 9%, очередь CAN макс 2%, потеряно 0 (всего 0)
+```
+
+Frames per second, text written to the log, compressed data written to the card, peak fill of the LZMA input buffer and of the CAN frame queue during the minute, and lost frames. If the queue approaches 100 % or frames get lost, the encoder can't keep up — raise the CPU frequency to 240 MHz or switch to `LOG_COMPRESS 1`.
+
+**`/errors.log` in the root of the SD card** — errors and important events with date/time, firmware version and uptime: abnormal resets (`PANIC`, `TASK_WDT`, `BROWNOUT`…), lost CAN frames (once a minute, aggregated), log file / encoder errors, TWAI start failure, RTC oscillator-stopped flag, rejected car time, web OTA errors. Messages from before the card is mounted are kept in RAM and written afterwards. Above 256 KB the file is moved to `errors.old.log`. The portal shows the received / dropped frame counters on the home page and links to the error log there and on `/logs`. The close marker of every log file also records `dropped=N`.
+
 ### Log format
 
-Files: `/YYYY-MM-DD/can_log_NNNN.txt.gz` (with `LOG_COMPRESS 0` — `.txt`). Files are created only when real CAN frames arrive: no traffic on the bus — no file. A new file is started on every boot (at the first frame) and whenever the current one reaches `LOG_MAX_BYTES` (a 4 MB compressed file holds ~14 MB of text, ~3–4 minutes of busy I-CAN traffic). After midnight the next file goes into the new date folder. If the DS3231 is missing or its time is invalid, logs go to `/no-rtc/` until the time is set on the portal (the camera then writes to `/no-rtc/frames/`). The DS3231 is read only once at boot; after that the ESP32 system clock is used. Files of one trip can simply be concatenated in name order.
+Files: `/YYYY-MM-DD/can_log_NNNN.txt.lzma` (`.txt.gz` with `LOG_COMPRESS 1`, `.txt` with `0`). Files are created only when real CAN frames arrive: no traffic on the bus — no file. A new file is started on every boot (at the first frame) and whenever the current one reaches `LOG_MAX_BYTES` (with LZMA a 4 MB file holds ~33 MB of text — about 8 minutes of busy I-CAN traffic). After midnight the next file goes into the new date folder. If the DS3231 is missing or its time is invalid, logs go to `/no-rtc/` until the time is set on the portal (the camera then writes to `/no-rtc/frames/`). The DS3231 is read only once at boot; after that the ESP32 system clock is used. Files of one trip can simply be concatenated in name order.
 
-Compression is standard gzip written on the fly (LZ77 + fixed Huffman codes, no external library), so the files open in 7-Zip, WinRAR, `gzip -d`, or Python's `gzip`. Data is flushed to the card every `LOG_GZ_SYNC_MS`; a file that was not closed properly (crash, power loss) lacks the gzip trailer — `tools/log_unpack.py` unpacks it up to the break without errors and can join a folder into one text file for other tools.
+**LZMA (default).** The encoder from the LZMA SDK runs in its own task: the SD task feeds it log lines through a stream buffer, the encoder writes the compressed stream to the file. Files are in the standard `.lzma` format and open in 7-Zip, FAR (ArcLite), `xz --format=lzma -d` or Python's `lzma`. Compressed data reaches the card every ~4 KB. A file that was not closed properly (crash, power loss) has no end marker — `tools/log_unpack.py` unpacks it up to the break without errors and can join a folder into one text file for other tools (e.g. `bap_nav_decode.py`).
+
+**gzip (`LOG_COMPRESS 1`).** Standard gzip written by a small built-in compressor (LZ77 + fixed Huffman codes): less memory, ~3.5× instead of ~8×. Data is sync-flushed every `LOG_GZ_SYNC_MS`.
 
 One frame per line (inside the archive):
 
@@ -204,7 +221,7 @@ One frame per line (inside the archive):
 # 931204 ===== ACC OFF / SHUTDOWN =====
 ```
 
-Close reasons: `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT`, `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt.gz` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
+Close reasons: `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT` (with `dropped=N` — frames lost since boot), `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt.lzma` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
 
 ### BLE
 
@@ -294,5 +311,8 @@ The ESP32-S3 has no IRAM shortage, so recording and aiming could be merged into 
 ---
 
 ## Credits
+
+Log compression uses the LZMA encoder from the [LZMA SDK](https://github.com/ip7z/7zip) by Igor Pavlov (public domain).
+
 
 Developed with the assistance of **Claude** (Anthropic): firmware, tools, wiring diagrams and documentation were written in collaboration with the AI assistant; hardware, testing in the car and design decisions — by the author.
