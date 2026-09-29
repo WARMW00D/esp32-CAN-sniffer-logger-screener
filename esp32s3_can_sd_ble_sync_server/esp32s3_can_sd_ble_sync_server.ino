@@ -107,7 +107,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.2.2"
+#define FW_VERSION   "2.3.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -153,7 +153,7 @@
 // Время с годом меньше этого — ошибка: такое время не принимается ни от
 // часов на I2C, ни из CAN, ни с портала (лог идёт в /no-rtc, светодиод жёлтый)
 #define TIME_MIN_YEAR         2026
-#define TIME_MAX_YEAR         2040
+#define TIME_MAX_YEAR         2026
 
 #define CAN_TIME_SYNC         2
 #define CAN_TIME_ID           0x6B2
@@ -321,7 +321,7 @@ const char* AP_PASSWORD = "canlogger123";
 //     подключаться вручную ("Добавить сеть", имя и пароль вводятся руками).
 //     Телефон, который уже запомнил сеть, подключится и к скрытой.
 // 0 — обычная видимая сеть (по умолчанию)
-#define WIFI_AP_HIDDEN  0
+#define WIFI_AP_HIDDEN  1
 // Мощность передатчика WiFi. Меньше мощность — меньше броски тока при
 // передаче (по умолчанию до ~19.5 дБм, пики сотни мА) и меньше просадки
 // питания; цена — дальность и скорость портала. Варианты из WiFi.h:
@@ -936,7 +936,7 @@ void handleSetLang() {
   touchWeb();
   saveUiLanguage(webServer.arg("lang") == "en");
   String back = webServer.arg("back");
-  if (back != "/logs" && back != "/update") back = "/";
+  if (back != "/logs" && back != "/update" && back != "/errors") back = "/";
   webServer.sendHeader("Location", back);
   webServer.send(303);
 }
@@ -1064,7 +1064,7 @@ void handleRoot() {
                 "<p><a href='/logs'>" + TR("Список логов на SD-карте", "Logs on SD card") + "</a></p>"
                 "<p><a href='/update'>" + TR("Обновление прошивки", "Firmware update") + "</a></p>"
                 "<p><small>CAN: " + TR("принято кадров", "frames received") + " " + String(canFramesTotal) + ", " +
-                TR("потеряно", "dropped") + " " + String(canDroppedTotal) + " · <a href='/download?file=" ERRLOG_PATH "'>" +
+                TR("потеряно", "dropped") + " " + String(canDroppedTotal) + " · <a href='/errors'>" +
                 TR("журнал ошибок", "error log") + "</a></small></p>"
                 "<hr><p><small>" + TR("Прошивка", "Firmware") + " " FW_VERSION " (" +
                 TR("сборка", "build") + " " FW_BUILD ")</small></p>"
@@ -1203,6 +1203,98 @@ String humanSize(uint64_t b) {
   return String(buf);
 }
 
+// HTML-экранирование для вывода текста журнала
+String htmlEscape(const String& in) {
+  String o;
+  o.reserve(in.length() + 16);
+  for (size_t i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (c == '<') o += "&lt;";
+    else if (c == '>') o += "&gt;";
+    else if (c == '&') o += "&amp;";
+    else if (c != '\r') o += c;
+  }
+  return o;
+}
+
+// Страница журнала ошибок: последние записи, свежие сверху.
+// Читаем только хвост файла (до 32 КБ), чтобы большой журнал не съел память.
+#define ERRLOG_VIEW_BYTES  (32 * 1024)
+#define ERRLOG_VIEW_LINES  300
+void handleErrors() {
+  touchWeb();
+  String html = htmlHead(TR("Журнал ошибок", "Error log")) +
+                "<h2>" + TR("Журнал ошибок", "Error log") + "</h2>"
+                "<p><a href='/'>&larr; " + TR("на главную", "home") + "</a> · <a href='/logs'>" +
+                TR("логи", "logs") + "</a></p>";
+
+  if (!sdMounted || !LOGFS.exists(ERRLOG_PATH)) {
+    html += "<p class='meta'>" + TR("Журнал пуст — ошибок не было.", "The log is empty — no errors so far.") + "</p>";
+  } else {
+    String tail;
+    size_t size = 0;
+    if (errMutex) xSemaphoreTake(errMutex, pdMS_TO_TICKS(2000));
+    File f = LOGFS.open(ERRLOG_PATH);
+    if (f) {
+      size = f.size();
+      size_t from = size > ERRLOG_VIEW_BYTES ? size - ERRLOG_VIEW_BYTES : 0;
+      f.seek(from);
+      tail.reserve(size - from + 1);
+      while (f.available()) tail += (char)f.read();
+      f.close();
+      if (from > 0) {                         // первая строка обрезана — пропускаем
+        int nl = tail.indexOf('\n');
+        tail = nl >= 0 ? tail.substring(nl + 1) : String("");
+      }
+    }
+    if (errMutex) xSemaphoreGive(errMutex);
+
+    // Разбиваем на строки и выводим в обратном порядке: свежие сверху
+    std::vector<int> starts;
+    starts.push_back(0);
+    for (int i = 0; i < (int)tail.length(); i++)
+      if (tail[i] == '\n' && i + 1 < (int)tail.length()) starts.push_back(i + 1);
+    int total = starts.size();
+    int shown = total < ERRLOG_VIEW_LINES ? total : ERRLOG_VIEW_LINES;
+
+    html += "<p class='meta'>errors.log — " + humanSize(size) + ". " +
+            TR("Показаны последние записи, свежие сверху", "Latest entries, newest first") +
+            " (" + String(shown) + ").</p>"
+            "<pre style='white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.45;"
+            "background:#161616;border:1px solid #333;padding:10px;border-radius:6px'>";
+    for (int k = total - 1; k >= total - shown; k--) {
+      int a = starts[k];
+      int b = (k + 1 < total) ? starts[k + 1] : tail.length();
+      String line = tail.substring(a, b);
+      line.trim();
+      if (line.length()) html += htmlEscape(line) + "\n";
+    }
+    html += "</pre>"
+            "<p><a href='/download?file=" ERRLOG_PATH "'>" + TR("Скачать errors.log", "Download errors.log") + "</a>";
+    if (LOGFS.exists(ERRLOG_OLD_PATH))
+      html += " · <a href='/download?file=" ERRLOG_OLD_PATH "'>errors.old.log</a>";
+    html += "</p><form method='POST' action='/errors-clear' onsubmit=\"return confirm('" +
+            TR("Очистить журнал ошибок?", "Clear the error log?") + "');\">"
+            "<button type='submit' style='border-color:#c62828;color:#ff6b6b'>" +
+            TR("Очистить журнал", "Clear log") + "</button></form>";
+  }
+  html += "</body></html>";
+  webServer.send(200, "text/html; charset=utf-8", html);
+}
+
+void handleErrorsClear() {
+  touchWeb();
+  if (sdMounted) {
+    if (errMutex) xSemaphoreTake(errMutex, pdMS_TO_TICKS(2000));
+    LOGFS.remove(ERRLOG_PATH);
+    LOGFS.remove(ERRLOG_OLD_PATH);
+    if (errMutex) xSemaphoreGive(errMutex);
+    Serial.println("Портал: журнал ошибок очищен");
+  }
+  webServer.sendHeader("Location", "/errors");
+  webServer.send(303);
+}
+
 void handleLogs() {
   touchWeb();
   String html = htmlHead(TR("Логи CAN-сниффера", "CAN sniffer logs")) +
@@ -1226,7 +1318,8 @@ void handleLogs() {
     File ef = LOGFS.open(ERRLOG_PATH);
     size_t es = ef ? ef.size() : 0;
     if (ef) ef.close();
-    html += "<p><a href='/download?file=" ERRLOG_PATH "'>errors.log</a> <span class='meta'>(" + humanSize(es) + ")</span>";
+    html += "<p>" + TR("Журнал ошибок", "Error log") + ": <a href='/errors'>" + TR("открыть", "view") +
+            "</a> · <a href='/download?file=" ERRLOG_PATH "'>errors.log</a> <span class='meta'>(" + humanSize(es) + ")</span>";
     if (LOGFS.exists(ERRLOG_OLD_PATH))
       html += " · <a href='/download?file=" ERRLOG_OLD_PATH "'>errors.old.log</a>";
     html += "</p>";
@@ -1768,6 +1861,8 @@ void setupWiFiAndWebServer() {
   webServer.on("/download-tar", HTTP_GET, handleDownloadTar);
   webServer.on("/delete", HTTP_POST, handleDelete);
   webServer.on("/sd-format", HTTP_POST, handleSdFormat);
+  webServer.on("/errors", HTTP_GET, handleErrors);
+  webServer.on("/errors-clear", HTTP_POST, handleErrorsClear);
   webServer.on("/update", HTTP_GET, handleUpdatePage);
   webServer.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
   webServer.begin();
