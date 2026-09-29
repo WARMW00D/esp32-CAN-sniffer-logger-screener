@@ -114,7 +114,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.3.0"` (WROOM) / `"2.3.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.4.0"` (WROOM) / `"2.4.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -128,6 +128,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 | `LOG_GZ_DEPTH` | `4` | gzip only — match search depth: 1 = least CPU, 4 = better ratio almost for free |
 | `LOG_GZ_SYNC_MS` | `1000` | gzip only — compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
+| `AP_CHANNEL` | `0` | 0 = pick the quietest of channels 1 / 6 / 11 at start-up (2–3 s scan; neighbour networks weighted by signal power in mW and by channel overlap, so one network at −45 dBm counts more than many at −75 dBm); 1–13 = fixed channel. The chosen channel and per-channel interference are shown in Serial and on the portal home page |
 | `WIFI_TX_POWER` | `WIFI_POWER_13dBm` (WROOM) / `WIFI_POWER_8_5dBm` (Super Mini) | Wi-Fi transmit power: lower means smaller current spikes, at the cost of range and portal speed |
 | `AP_SSID` / `AP_PASSWORD` | `S3-CAN-Sniffer-Setup` / `canlogger123` | Portal access point |
 | `OTA_PASSWORD` / `OTA_WEB_USER` | `changeme123` / `admin` | **Change before use.** Shared by `/update` and espota |
