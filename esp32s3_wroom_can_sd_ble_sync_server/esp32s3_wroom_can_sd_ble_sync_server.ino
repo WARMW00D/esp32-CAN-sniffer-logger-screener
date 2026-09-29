@@ -92,7 +92,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.6.0"
+#define FW_VERSION   "2.7.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -318,6 +318,12 @@ const int AP_CANDIDATES[3] = {1, 6, 11};
 // питания; цена — дальность и скорость портала. Варианты из WiFi.h:
 // WIFI_POWER_19_5dBm, _17dBm, _15dBm, _13dBm, _11dBm, _8_5dBm, _7dBm, _5dBm, _2dBm
 #define WIFI_TX_POWER   WIFI_POWER_13dBm   // у WROOM стабилизатор мощнее — можно больше
+// Сколько минут после включения зажигания работают точка доступа WiFi и
+// портал (и OTA через espota). Потом WiFi выключается до следующего
+// включения зажигания — меньше нагрев и потребление, эфир чище для BLE.
+// Пока портал реально используется (были запросы за последние WEB_HOLD_MS),
+// WiFi не выключается. 0 — WiFi работает всё время, как раньше.
+#define WIFI_ACTIVE_MINUTES   5
 
 // ---------- BLE синхронизация времени ----------
 #define SYNC_SERVICE_UUID   "A1B2C3D4-0001-41A2-9E3B-000000000001"
@@ -1122,7 +1128,12 @@ void handleRoot() {
                 "<p><small>WiFi: " + TR("канал", "channel") + " " + String(apChannelUsed) +
                 (AP_CHANNEL == 0 ? " (" + TR("авто", "auto") + "; " + TR("помеха", "noise") + " 1/6/11: " +
                    String(apChanNoiseDbm[0], 0) + " / " + String(apChanNoiseDbm[1], 0) + " / " +
-                   String(apChanNoiseDbm[2], 0) + " dBm)" : String("")) + "</small><br>"
+                   String(apChanNoiseDbm[2], 0) + " dBm)" : String("")) + "</small><br>" +
+                (WIFI_ACTIVE_MINUTES > 0 ? "<small>" + TR("WiFi выключится через ", "WiFi turns off in ") +
+                   String(millis() < (uint32_t)WIFI_ACTIVE_MINUTES * 60000UL ?
+                          ((uint32_t)WIFI_ACTIVE_MINUTES * 60000UL - millis()) / 60000UL + 1 : 0) +
+                   TR(" мин (продлевается, пока вы пользуетесь порталом)", " min (extended while you use the portal)") + "</small><br>"
+                 : String("")) +
                 "<small>CAN: " + TR("принято кадров", "frames received") + " " + String(canFramesTotal) + ", " +
                 TR("потеряно", "dropped") + " " + String(canDroppedTotal) + " · <a href='/errors'>" +
                 TR("журнал ошибок", "error log") + "</a></small></p>"
@@ -3199,6 +3210,33 @@ void closeLogForRestart(uint8_t reason) {
   LOGFS.end();
 }
 
+// Выключение WiFi и всего, что поверх него (веб-сервер, mDNS, OTA).
+// Порядок важен: сначала сервисы, потом сам WiFi — один раз. Двойная
+// остановка давала гонку в обработчике событий и безвредное
+// "wifi_init_default: netstack cb reg failed" в логе.
+bool wifiOn = true;
+void wifiShutdown() {
+  if (!wifiOn) return;
+  wifiOn = false;
+  webServer.stop();
+  ArduinoOTA.end();
+  MDNS.end();
+  WiFi.mode(WIFI_OFF);
+  delay(50);
+}
+
+// Автовыключение WiFi через WIFI_ACTIVE_MINUTES после старта
+void wifiAutoOffLoop() {
+#if WIFI_ACTIVE_MINUTES > 0
+  if (!wifiOn || otaInProgress) return;
+  if (millis() < (uint32_t)WIFI_ACTIVE_MINUTES * 60000UL) return;
+  if (webPortalActive()) return;                 // портал в работе — ждём
+  Serial.printf("WiFi: прошло %d мин, портал не используется — точка доступа выключена "
+                "до следующего включения зажигания\n", WIFI_ACTIVE_MINUTES);
+  wifiShutdown();
+#endif
+}
+
 void goToSleepUntilAccOn() {
   Serial.println("ACC выключено — завершаю запись и ухожу в сон...");
   ledOff();
@@ -3211,10 +3249,7 @@ void goToSleepUntilAccOn() {
   // один раз. Двойная остановка (softAPdisconnect(true) + mode(OFF))
   // давала гонку в обработчике событий и безвредное
   // "wifi_init_default: netstack cb reg failed" в логе.
-  webServer.stop();
-  MDNS.end();
-  WiFi.mode(WIFI_OFF);
-  delay(50);
+  wifiShutdown();
   NimBLEDevice::deinit(true);
 
   Serial.println("Ухожу в deep sleep, разбужусь по фронту ACC ON");
@@ -3266,8 +3301,11 @@ void statsLoop() {
 }
 
 void loop() {
-  webServer.handleClient();
-  ArduinoOTA.handle();
+  if (wifiOn) {
+    webServer.handleClient();
+    ArduinoOTA.handle();
+  }
+  wifiAutoOffLoop();
   rtcServiceLoop();   // отложенная запись времени во внешние часы
   statsLoop();        // строка [STAT] в Serial, потери кадров — в errors.log
 
