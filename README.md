@@ -74,6 +74,7 @@ Common parts:
 |---|---|
 | CAN transceiver | SN65HVD230, or TJA1051T/3 (e.g. CJMCU-1051 board with a genuine chip) |
 | RTC (optional) | DS3231 or PCF8563, detected automatically. Without it, time comes from the CAN bus (see *Time*). DS3231 MH board: **charging circuit must be removed** when using a CR2032 |
+| Unneeded LEDs | **Remove them** on all boards and modules (power indicators on the SD, RTC, transceiver and DC-DC modules and on the ESP32 boards): they stay lit all the time, including in sleep, and make up most of the parking current. The status LED (WS2812) is controlled by the firmware and switched off before sleep |
 | Optocoupler (PC817 or similar) | ACC (ignition) detection, 1.2–1.5 kΩ series resistor on the 12 V side |
 | 12 V → 5 V DC-DC | Low quiescent current matters: it runs from permanent 12 V. For the WROOM board set it to 5.2–5.3 V if there is a Schottky diode in series |
 
@@ -113,7 +114,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.2.2"` (WROOM) / `"2.2.2"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.3.0"` (WROOM) / `"2.3.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -143,6 +144,7 @@ The on-board RGB LED (WS2812, GPIO48) flashes once per second while the sniffer 
 Connect to the access point and open `http://192.168.4.1`.
 
 - `/` — date/time with its source and the detected RTC, "Phone time" button, CAN bitrate, firmware version
+- `/errors` — error log right in the browser: latest entries first (last 300 lines), download `errors.log` / `errors.old.log`, clear the log
 - `/logs` — log folders by date, collapsed; press **+** to see a folder's files (count and total size are shown right away); single-file download, several folders as one TAR archive, or recursive deletion of the selected folders (with confirmation; the folder currently being written is protected)
 - If the SD card can't be mounted, the home page offers **Format card as FAT32** (password-protected like `/update`). Cards of 64 GB and larger usually come formatted as exFAT, which the Arduino-ESP32 core does not support. A mounted card is never formatted — use folder deletion on `/logs` instead. You can also format large cards as FAT32 on a PC with guiformat or Rufus (the standard Windows formatter refuses FAT32 above 32 GB).
 - `/update` — firmware upload from the browser (Basic Auth: `OTA_WEB_USER` / `OTA_PASSWORD`)
@@ -195,7 +197,7 @@ With `CAN_TIME_SYNC 2` the car's clock is authoritative: after disconnecting the
 
 Frames per second, text written to the log, compressed data written to the card, peak fill of the LZMA input buffer and of the CAN frame queue during the minute, and lost frames. If the queue approaches 100 % or frames get lost, the encoder can't keep up — raise the CPU frequency to 240 MHz or switch to `LOG_COMPRESS 1`.
 
-**`/errors.log` in the root of the SD card** — errors and important events with date/time, firmware version and uptime: abnormal resets (`PANIC`, `TASK_WDT`, `BROWNOUT`…), lost CAN frames (once a minute, aggregated), log file / encoder errors, TWAI start failure, RTC oscillator-stopped flag, rejected car time, web OTA errors. Messages from before the card is mounted are kept in RAM and written afterwards. Above 256 KB the file is moved to `errors.old.log`. The portal shows the received / dropped frame counters on the home page and links to the error log there and on `/logs`. The close marker of every log file also records `dropped=N`.
+**`/errors.log` in the root of the SD card** — errors and important events with date/time, firmware version and uptime: abnormal resets (`PANIC`, `TASK_WDT`, `BROWNOUT`…), lost CAN frames (once a minute, aggregated), log file / encoder errors, TWAI start failure, RTC oscillator-stopped flag, rejected car time, web OTA errors. Messages from before the card is mounted are kept in RAM and written afterwards. Above 256 KB the file is moved to `errors.old.log`. The portal shows the received / dropped frame counters on the home page; the log can be read on the `/errors` page (newest first) and downloaded or cleared there. The close marker of every log file also records `dropped=N`.
 
 ### Log format
 
@@ -305,6 +307,7 @@ The ESP32-S3 has no IRAM shortage, so recording and aiming could be merged into 
 - **No extra termination.** CANH–CANL on the sniffer must not be ~120 Ω.
 - **DS3231 + CR2032:** the MH board charges the battery from VCC. Remove the charging resistor (marked `201`) or use a rechargeable LIR2032. A charged CR2032 in a hot car can swell or leak.
 - **Power:** don't feed the sniffer from the head unit's USB port (it acts as a USB host and keeps the sniffer awake). Use a DC-DC with low quiescent current, a fuse and a TVS diode on the input.
+- **Unneeded LEDs:** remove the power LEDs on all modules and boards — they are the main source of parking current. On the camera they can also reflect in the cluster glass and spoil the frames.
 - **Antenna:** the Super Mini has a chip antenna on the board; keep it away from metal, or the portal and BLE range drop sharply.
 - **Change the passwords** (`AP_PASSWORD`, `OTA_PASSWORD`) before installing.
 
