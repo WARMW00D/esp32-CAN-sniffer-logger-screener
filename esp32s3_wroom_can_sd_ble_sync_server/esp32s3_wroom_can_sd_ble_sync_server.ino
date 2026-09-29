@@ -92,7 +92,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.3.0"
+#define FW_VERSION   "2.4.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -297,7 +297,17 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 // ---------- WiFi точка доступа (веб-портал) ----------
 const char* AP_SSID     = "S3-CAN-Sniffer-Setup";
 const char* AP_PASSWORD = "canlogger123";
-#define AP_CHANNEL      1
+// Канал точки доступа:
+//   0    — выбрать автоматически при старте: сканирование эфира (~2–3 с) и
+//          выбор самого тихого из неперекрывающихся 1 / 6 / 11 с учётом
+//          уровня сигнала соседних сетей и перекрытия каналов;
+//   1–13 — фиксированный канал.
+#define AP_CHANNEL      0
+// Итог автовыбора (для портала и Serial)
+int   apChannelUsed = 1;
+float apChanNoiseDbm[3] = {-100, -100, -100};   // суммарная помеха, дБм-экв.
+int   apChanNets[3] = {0, 0, 0};                 // сетей, задевающих канал
+const int AP_CANDIDATES[3] = {1, 6, 11};
 // 1 — скрытая сеть: SSID не транслируется, в списке сетей её не видно,
 //     подключаться вручную ("Добавить сеть", имя и пароль вводятся руками).
 //     Телефон, который уже запомнил сеть, подключится и к скрытой.
@@ -1044,7 +1054,11 @@ void handleRoot() {
                   TR("Форматировать карту в FAT32", "Format card as FAT32") + "</button></form>") +
                 "<p><a href='/logs'>" + TR("Список логов на SD-карте", "Logs on SD card") + "</a></p>"
                 "<p><a href='/update'>" + TR("Обновление прошивки", "Firmware update") + "</a></p>"
-                "<p><small>CAN: " + TR("принято кадров", "frames received") + " " + String(canFramesTotal) + ", " +
+                "<p><small>WiFi: " + TR("канал", "channel") + " " + String(apChannelUsed) +
+                (AP_CHANNEL == 0 ? " (" + TR("авто", "auto") + "; " + TR("помеха", "noise") + " 1/6/11: " +
+                   String(apChanNoiseDbm[0], 0) + " / " + String(apChanNoiseDbm[1], 0) + " / " +
+                   String(apChanNoiseDbm[2], 0) + " dBm)" : String("")) + "</small><br>"
+                "<small>CAN: " + TR("принято кадров", "frames received") + " " + String(canFramesTotal) + ", " +
                 TR("потеряно", "dropped") + " " + String(canDroppedTotal) + " · <a href='/errors'>" +
                 TR("журнал ошибок", "error log") + "</a></small></p>"
                 "<hr><p><small>" + TR("Прошивка", "Firmware") + " " FW_VERSION " (" +
@@ -1820,15 +1834,65 @@ void handleUpdateDone() {
   ESP.restart();
 }
 
+// ---------------------------------------------------------------------
+// Автовыбор канала WiFi. Каждая найденная сеть добавляет "помеху" каналам
+// 1 / 6 / 11 с весом:
+//   - по мощности: линейно (мВт), т.е. сеть на −45 дБм весит как 1000 сетей
+//     на −75 дБм — одна громкая соседка хуже пяти далёких;
+//   - по перекрытию: полосы 2.4 ГГц шириной ~4 канала, сосед через 1–4
+//     канала мешает частично (1.0 / 0.7 / 0.4 / 0.15 / 0.05).
+// Выбирается канал с наименьшей суммой.
+// ---------------------------------------------------------------------
+
+int pickQuietChannel() {
+  static const float overlap[5] = {1.0f, 0.7f, 0.4f, 0.15f, 0.05f};
+  double noise[3] = {0, 0, 0};
+  for (int i = 0; i < 3; i++) apChanNets[i] = 0;
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  uint32_t t0 = millis();
+  int n = WiFi.scanNetworks(false, true);        // синхронно, со скрытыми сетями
+  for (int k = 0; k < n; k++) {
+    int ch = WiFi.channel(k);
+    int rssi = WiFi.RSSI(k);
+    double mw = pow(10.0, rssi / 10.0);          // дБм -> мВт
+    for (int i = 0; i < 3; i++) {
+      int d = abs(ch - AP_CANDIDATES[i]);
+      if (d < 5) { noise[i] += mw * overlap[d]; apChanNets[i]++; }
+    }
+  }
+  WiFi.scanDelete();
+
+  int best = 0;
+  for (int i = 0; i < 3; i++) {
+    apChanNoiseDbm[i] = noise[i] > 0 ? 10.0 * log10(noise[i]) : -100.0f;
+    if (noise[i] < noise[best]) best = i;
+  }
+  apChannelUsed = AP_CANDIDATES[best];
+  Serial.printf("WiFi: найдено сетей %d за %lu мс; помеха: к1 %.0f дБм (%d), к6 %.0f дБм (%d), к11 %.0f дБм (%d) -> канал %d\n",
+                n < 0 ? 0 : n, (unsigned long)(millis() - t0),
+                apChanNoiseDbm[0], apChanNets[0], apChanNoiseDbm[1], apChanNets[1],
+                apChanNoiseDbm[2], apChanNets[2], apChannelUsed);
+  return apChannelUsed;
+}
+
 void setupWiFiAndWebServer() {
+  int ch = AP_CHANNEL;
+#if AP_CHANNEL == 0
+  ch = pickQuietChannel();
+#else
+  apChannelUsed = AP_CHANNEL;
+#endif
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, WIFI_AP_HIDDEN);
+  WiFi.softAP(AP_SSID, AP_PASSWORD, ch, WIFI_AP_HIDDEN);
   WiFi.setTxPower(WIFI_TX_POWER);   // после softAP — до старта мощность не применяется
 
   Serial.print("Веб-страница установки времени: http://");
   Serial.println(WiFi.softAPIP());
-  Serial.printf("Точка доступа: %s (%s), мощность %.1f дБм\n", AP_SSID,
-                WIFI_AP_HIDDEN ? "скрытая" : "видимая", WiFi.getTxPower() / 4.0f);
+  Serial.printf("Точка доступа: %s (%s), канал %d%s, мощность %.1f дБм\n", AP_SSID,
+                WIFI_AP_HIDDEN ? "скрытая" : "видимая", ch, AP_CHANNEL == 0 ? " (авто)" : "",
+                WiFi.getTxPower() / 4.0f);
 
   // mDNS нужен, чтобы Arduino IDE увидела плату по имени как сетевой порт
   MDNS.begin("s3-can-sniffer");
