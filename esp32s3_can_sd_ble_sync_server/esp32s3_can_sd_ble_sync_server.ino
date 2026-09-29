@@ -107,7 +107,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.4.0"
+#define FW_VERSION   "2.5.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -153,7 +153,7 @@
 // Время с годом меньше этого — ошибка: такое время не принимается ни от
 // часов на I2C, ни из CAN, ни с портала (лог идёт в /no-rtc, светодиод жёлтый)
 #define TIME_MIN_YEAR         2026
-#define TIME_MAX_YEAR         2027
+#define TIME_MAX_YEAR         2040
 
 #define CAN_TIME_SYNC         2
 #define CAN_TIME_ID           0x6B2
@@ -331,12 +331,12 @@ const int AP_CANDIDATES[3] = {1, 6, 11};
 //     подключаться вручную ("Добавить сеть", имя и пароль вводятся руками).
 //     Телефон, который уже запомнил сеть, подключится и к скрытой.
 // 0 — обычная видимая сеть (по умолчанию)
-#define WIFI_AP_HIDDEN  1
+#define WIFI_AP_HIDDEN  0
 // Мощность передатчика WiFi. Меньше мощность — меньше броски тока при
 // передаче (по умолчанию до ~19.5 дБм, пики сотни мА) и меньше просадки
 // питания; цена — дальность и скорость портала. Варианты из WiFi.h:
 // WIFI_POWER_19_5dBm, _17dBm, _15dBm, _13dBm, _11dBm, _8_5dBm, _7dBm, _5dBm, _2dBm
-#define WIFI_TX_POWER   WIFI_POWER_11dBm
+#define WIFI_TX_POWER   WIFI_POWER_8_5dBm
 
 // ---------- BLE синхронизация времени ----------
 #define SYNC_SERVICE_UUID   "A1B2C3D4-0001-41A2-9E3B-000000000001"
@@ -410,6 +410,22 @@ String getActiveLogFolder() {
   portEXIT_CRITICAL(&activeLogMux);
   return String(tmp);
 }
+// Полный путь файла, который сейчас открыт на запись ("" — ни одного).
+// Нужен порталу: такой файл не отдаётся недописанным.
+char activeLogPath[48] = "";
+void setActiveLogPath(const char* p) {
+  portENTER_CRITICAL(&activeLogMux);
+  strncpy(activeLogPath, p, sizeof(activeLogPath) - 1);
+  activeLogPath[sizeof(activeLogPath) - 1] = 0;
+  portEXIT_CRITICAL(&activeLogMux);
+}
+String getActiveLogPath() {
+  char tmp[48];
+  portENTER_CRITICAL(&activeLogMux);
+  memcpy(tmp, activeLogPath, sizeof(tmp));
+  portEXIT_CRITICAL(&activeLogMux);
+  return String(tmp);
+}
 uint32_t currentLogBytes = 0;     // сколько записано в текущий файл
 
 // Структура одного кадра для передачи между задачами через очередь
@@ -421,6 +437,10 @@ SemaphoreHandle_t shutdownDoneSemaphore;
 // сигнализирует sdTask, что пора закрыть файл перед сном. Реальные CAN ID
 // укладываются в 11/29 бит, это значение физически недостижимо на шине.
 #define SHUTDOWN_SENTINEL_ID  0xFFFFFFFF
+// Второй служебный ID: портал просит закрыть текущий файл (перед скачиванием),
+// запись продолжится в следующий файл с первого же кадра
+#define ROTATE_SENTINEL_ID    0xFFFFFFFE
+SemaphoreHandle_t rotateDoneSemaphore;
 // Причина закрытия лога — передаётся в поле dlc служебного кадра
 #define CLOSE_REASON_SLEEP  0
 #define CLOSE_REASON_OTA    1
@@ -1344,6 +1364,7 @@ void handleLogs() {
   bool foundAny = false;
   bool foundFolder = false;
   String active = getActiveLogFolder();
+  String activePath = getActiveLogPath();
   File dateEntry = root.openNextFile();
   while (dateEntry) {
     String entryName = String(dateEntry.name());
@@ -1365,9 +1386,12 @@ void handleLogs() {
           if (!fileName.startsWith("/")) fileName = "/" + fileName;
           String fullPath = folderName + "/" + fileName.substring(fileName.lastIndexOf('/') + 1);
           size_t sizeBytes = fileEntry.size();
+          bool writing = (fullPath == activePath);
           items += "<li><a href='/download?file=" + fullPath + "'>" +
                    fullPath.substring(fullPath.lastIndexOf('/') + 1) + "</a> <span class='meta'>(" +
-                   humanSize(sizeBytes) + ")</span></li>";
+                   humanSize(sizeBytes) + (writing ? ", " + TR("пишется — при скачивании будет закрыт",
+                                                                    "being written — will be closed on download") : String("")) +
+                   ")</span></li>";
           nFiles++;
           total += sizeBytes;
           foundAny = true;
@@ -1481,6 +1505,20 @@ void dlFinish(WiFiClient& client) {
   client.stop();
 }
 
+// Закрыть открытый на запись файл, если он попадает в скачивание.
+// true — файла на запись больше нет (или не было).
+bool closeActiveLogForDownload() {
+  if (getActiveLogPath().length() == 0) return true;
+  CanLogEntry e;
+  memset(&e, 0, sizeof(e));
+  e.id = ROTATE_SENTINEL_ID;
+  xSemaphoreTake(rotateDoneSemaphore, 0);                 // сбросить старый сигнал
+  if (xQueueSend(canQueue, &e, pdMS_TO_TICKS(500)) != pdTRUE) return false;
+  bool ok = xSemaphoreTake(rotateDoneSemaphore, pdMS_TO_TICKS(20000)) == pdTRUE;   // LZMA дописывает хвост
+  if (!ok) errLog("Портал: файл лога не закрылся для скачивания за 20 с");
+  return ok;
+}
+
 void handleDownload() {
   touchWeb();
   if (!webServer.hasArg("file")) {
@@ -1494,6 +1532,13 @@ void handleDownload() {
     return;
   }
 
+  // Скачивают файл, который сейчас пишется, — сначала закрываем его штатно
+  if (path == getActiveLogPath()) closeActiveLogForDownload();
+  if (path == getActiveLogPath()) {
+    webServer.send(409, "text/plain; charset=utf-8",
+      TR("Файл сейчас пишется и не закрылся — попробуйте ещё раз", "File is being written and could not be closed — try again"));
+    return;
+  }
   File f = LOGFS.open(path, FILE_READ);
   if (!f || f.isDirectory()) {
     webServer.send(404, "text/plain; charset=utf-8", TR("Файл не найден: ", "File not found: ") + path);
@@ -1591,6 +1636,14 @@ void handleDownloadTar() {
     return;
   }
 
+  // Если среди выбранных папок есть та, куда идёт запись, — закрываем
+  // текущий файл: он попадёт в архив целиком, а новый (открытый уже после
+  // этого) в архив не включается
+  String activeFolder = getActiveLogFolder();
+  for (const String& fp : folders)
+    if (activeFolder.length() && fp == activeFolder) { closeActiveLogForDownload(); break; }
+  String activeNow = getActiveLogPath();
+
   // Проход 1: список файлов и их размеры -> точный размер архива.
   // С известным Content-Length браузер показывает прогресс, и не нужен
   // chunked-режим (в нём недописанный кусок ломает весь поток).
@@ -1608,6 +1661,11 @@ void handleDownloadTar() {
         if (fileName.lastIndexOf('/') != -1) fileName = fileName.substring(fileName.lastIndexOf('/') + 1);
         TarItem it;
         it.path = folderPath + "/" + fileName;
+        if (it.path == activeNow) {                 // пишется прямо сейчас — пропускаем
+          e.close();
+          e = folder.openNextFile();
+          continue;
+        }
         it.archiveName = folderNameInArchive + "/" + fileName;
         it.size = e.size();
         total += 512 + ((uint64_t)(it.size + 511) / 512) * 512;
@@ -2446,7 +2504,10 @@ bool openNewLogFile(const String& prevName) {
 
   canLogFile = LOGFS.open(logPath, FILE_WRITE);
   currentLogBytes = 0;
-  if (canLogFile) setActiveLogFolder(currentDateFolder.c_str());
+  if (canLogFile) {
+    setActiveLogFolder(currentDateFolder.c_str());
+    setActiveLogPath(logPath.c_str());
+  }
   if (!canLogFile) {
     errLog("SD: не удалось открыть %s", logPath.c_str());
     return false;
@@ -2685,6 +2746,7 @@ bool logWriteFrame(const CanLogEntry& entry) {
     logClose();
     logSinceFlush = 0;
     logPendingPrev = prev;
+    setActiveLogPath("");
   }
   return true;
 }
@@ -2707,6 +2769,25 @@ void sdTask(void* param) {
       continue;
     }
 
+    // Запрос портала: закрыть текущий файл перед скачиванием. Кадры до
+    // запроса попадают в закрываемый файл (очередь упорядочена), после — в новый
+    if (entry.id == ROTATE_SENTINEL_ID) {
+      if (canLogFile) {
+        String prev = currentLogName;
+        char m[96];
+        int k = snprintf(m, sizeof(m), "# %lu ===== ROTATE (download) ===== dropped=%lu\n",
+                         (unsigned long)millis(), (unsigned long)canDroppedTotal);
+        logWrite(m, k);
+        logClose();
+        logSinceFlush = 0;
+        logPendingPrev = prev;          // следующий файл начнётся с CONTINUED
+        setActiveLogPath("");
+        Serial.printf("[SD task] %s закрыт для скачивания\n", prev.c_str());
+      }
+      xSemaphoreGive(rotateDoneSemaphore);
+      continue;
+    }
+
     // Сигнал на выключение — обрабатываем ОТДЕЛЬНО и ПЕРВЫМ, не пытаясь
     // собрать из него строку лога (dlc/data тут не valid CAN-данные)
     if (entry.id == SHUTDOWN_SENTINEL_ID) {
@@ -2726,6 +2807,7 @@ void sdTask(void* param) {
         logClose();
       }
       setActiveLogFolder("");
+      setActiveLogPath("");
       if (logSessionStarted) Serial.printf("[SD task] Лог закрыт штатно (%s)\n", why);
       else Serial.printf("[SD task] Данных CAN не было — файл не создавался (%s)\n", why);
       xSemaphoreGive(shutdownDoneSemaphore);
@@ -2913,6 +2995,7 @@ void setup() {
   // из CAN перед открытием первого файла (~2 с трафика I-CAN)
   canQueue = xQueueCreate(CAN_QUEUE_LEN, sizeof(CanLogEntry));
   shutdownDoneSemaphore = xSemaphoreCreateBinary();
+  rotateDoneSemaphore   = xSemaphoreCreateBinary();
 
   setupRTC();          // сначала RTC — дата нужна для имени папки на SD
   loadUiLanguage();
