@@ -107,7 +107,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.5.0"
+#define FW_VERSION   "2.6.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -353,6 +353,51 @@ const int AP_CANDIDATES[3] = {1, 6, 11};
 #define WATCH_DATA_CHAR_UUID     "A1B2C3D4-0001-41A2-9E3B-000000000005"
 
 volatile uint32_t watchedCanId = 0; // 0 = ничего не наблюдаем
+
+// =====================================================================
+// Поток кадров по BLE с фильтром в стиле ACL (для HUD и отладки).
+// Клиент подписывается на FRAMES (…0008) и пишет список правил в ACL
+// (…0007); сниффер шлёт совпавшие кадры пачками. Протокол — в
+// docs/BLE_ACL_protocol_ru.md. Список правил живёт до отключения клиента,
+// который его записал: после переподключения его нужно прислать заново.
+// =====================================================================
+#define ACL_CHAR_UUID     "A1B2C3D4-0001-41A2-9E3B-000000000007"
+#define FRAMES_CHAR_UUID  "A1B2C3D4-0001-41A2-9E3B-000000000008"
+#define ACL_VERSION       0x01
+#define ACL_MAX_RULES     32
+#define ACL_BATCH_MS      20      // макс. задержка пачки, мс
+#define ACL_QUEUE_LEN     256     // кадров в очереди на отправку по BLE
+#define ACL_STATE_SLOTS   256     // память "по изменению / интервал" на ID
+
+// Флаги правила (байт 0)
+#define ACL_PERMIT    0x01        // 1 — разрешить, 0 — запретить
+#define ACL_EXT       0x02        // правило для 29-битных ID (иначе 11-бит)
+#define ACL_ONCHANGE  0x04        // слать, только если данные изменились
+#define ACL_ANYFMT    0x08        // формат ID не важен (11 и 29 бит)
+
+struct __attribute__((packed)) AclRule {   // 12 байт, little-endian
+  uint8_t  flags;
+  uint8_t  reserved;
+  uint16_t minIntervalMs;   // 0 — без ограничения
+  uint32_t id;
+  uint32_t mask;            // 1 — бит должен совпасть; 0 — любой
+};
+struct AclSet { uint8_t n; AclRule r[ACL_MAX_RULES]; };
+static AclSet aclSets[2];                    // двойной буфер: пишем в свободный,
+static AclSet* volatile aclCur = &aclSets[0];// потом одним присваиванием переключаем
+
+struct __attribute__((packed)) AclFrame { uint16_t ts; uint32_t idf; uint8_t dlc; uint8_t data[8]; };
+struct AclState { uint32_t key; uint32_t lastMs; uint8_t dlc; uint8_t data[8]; };
+static AclState aclState[ACL_STATE_SLOTS];
+
+QueueHandle_t bleQueue = nullptr;
+NimBLECharacteristic* aclCharacteristic = nullptr;
+NimBLECharacteristic* framesCharacteristic = nullptr;
+volatile bool     framesSubscribed = false;
+volatile uint16_t aclOwnerConn = 0xFFFF;     // кто записал список
+volatile uint16_t framesMtu = 23;
+volatile bool     bleDropFlag = false;
+volatile uint32_t bleSentTotal = 0, bleDroppedTotal = 0;
 
 // Пакет с сырыми данными наблюдаемого кадра
 struct __attribute__((packed)) WatchedFramePacket {
@@ -2003,8 +2048,16 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     Serial.printf("BLE клиент подключился: %s (ждём подписку на уведомления)\n",
                   connInfo.getAddress().toString().c_str());
+    // Реклама продолжается: одновременно могут быть подключены камера и HUD
+    NimBLEDevice::startAdvertising();
   }
   void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+    if (connInfo.getConnHandle() == aclOwnerConn) {      // автор списка ушёл — список сбрасываем
+      aclCur->n = 0;
+      framesSubscribed = false;
+      aclOwnerConn = 0xFFFF;
+      Serial.println("BLE: клиент ACL отключился, поток кадров остановлен");
+    }
     NimBLEDevice::startAdvertising();
   }
 };
@@ -2050,12 +2103,48 @@ class WatchSelectCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+// Запись списка ACL: [версия 0x01][правило 12 байт] × N. Пустой список
+// (только байт версии) — остановить поток.
+class AclCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+    NimBLEAttValue v = pCharacteristic->getValue();
+    size_t L = v.length();
+    const uint8_t* d = v.data();
+    if (L < 1 || d[0] != ACL_VERSION || (L - 1) % sizeof(AclRule) != 0) {
+      Serial.printf("BLE ACL: неверный формат (%u байт) — список не принят\n", (unsigned)L);
+      return;
+    }
+    size_t n = (L - 1) / sizeof(AclRule);
+    if (n > ACL_MAX_RULES) n = ACL_MAX_RULES;
+    AclSet* next = (aclCur == &aclSets[0]) ? &aclSets[1] : &aclSets[0];
+    memcpy(next->r, d + 1, n * sizeof(AclRule));
+    next->n = n;
+    memset(aclState, 0, sizeof(aclState));      // новые правила — новая память изменений
+    aclCur = next;                               // атомарное переключение
+    aclOwnerConn = connInfo.getConnHandle();
+    Serial.printf("BLE ACL: принято правил %u от %s\n", (unsigned)n, connInfo.getAddress().toString().c_str());
+  }
+};
+
+// Подписка на поток кадров: запоминаем MTU соединения для размера пачки
+class FramesCallbacks : public NimBLECharacteristicCallbacks {
+  void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+    framesSubscribed = subValue != 0;
+    framesMtu = connInfo.getMTU();
+    Serial.printf("BLE: подписка на поток кадров %s, MTU %u\n", framesSubscribed ? "вкл" : "выкл", framesMtu);
+  }
+};
+
 // Имя устройства — вынесено в константу, используется и при инициализации,
 // и при явной настройке рекламируемого имени (см. пояснение ниже)
 #define SNIFFER_BLE_NAME  "S3-CAN-Sniffer"
 
 void setupBLESync() {
   NimBLEDevice::init(SNIFFER_BLE_NAME);
+  NimBLEDevice::setMTU(247);          // крупные пачки кадров в одном уведомлении
+
+  bleQueue = xQueueCreate(ACL_QUEUE_LEN, sizeof(AclFrame));
+  xTaskCreatePinnedToCore(bleTxTask, "bleTx", 4096, NULL, 1, NULL, 1);
 
   NimBLEServer* pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
@@ -2080,6 +2169,13 @@ void setupBLESync() {
       WATCH_DATA_CHAR_UUID,
       NIMBLE_PROPERTY::NOTIFY
   );
+
+  // Поток кадров по ACL: список правил (WRITE/READ) и сами кадры (NOTIFY)
+  aclCharacteristic = pService->createCharacteristic(
+      ACL_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::READ, 1 + ACL_MAX_RULES * sizeof(AclRule));
+  aclCharacteristic->setCallbacks(new AclCallbacks());
+  framesCharacteristic = pService->createCharacteristic(FRAMES_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY, 512);
+  framesCharacteristic->setCallbacks(new FramesCallbacks());
 
   pService->start();
 
@@ -2618,6 +2714,86 @@ void setupSD() {
 // =====================================================================
 // canTask — только приём
 // =====================================================================
+// Фильтр ACL для одного кадра (вызывается из canTask). Первое совпавшее
+// правило решает; ни одно не совпало — кадр не отправляется.
+void aclProcess(const twai_message_t& m) {
+  AclSet* set = aclCur;
+  bool ext = m.extd;
+  const AclRule* hit = nullptr;
+  for (uint8_t i = 0; i < set->n; i++) {
+    const AclRule& r = set->r[i];
+    if (!(r.flags & ACL_ANYFMT) && (bool)(r.flags & ACL_EXT) != ext) continue;
+    if (((m.identifier ^ r.id) & r.mask) == 0) { hit = &r; break; }
+  }
+  if (!hit || !(hit->flags & ACL_PERMIT)) return;
+
+  uint8_t dlc = m.data_length_code > 8 ? 8 : m.data_length_code;
+  if ((hit->flags & ACL_ONCHANGE) || hit->minIntervalMs) {
+    uint32_t key = m.identifier | (ext ? 0x80000000u : 0) | 0x40000000u;   // 0 = пустой слот
+    uint32_t h = (key * 2654435761u) >> 24;                               // 0..255
+    AclState* st = nullptr;
+    for (int p = 0; p < 8; p++) {                                         // короткое пробирование
+      AclState& c = aclState[(h + p) & (ACL_STATE_SLOTS - 1)];
+      if (c.key == key || c.key == 0) { st = &c; break; }
+    }
+    if (st) {
+      uint32_t now = millis();
+      bool fresh = st->key == 0;
+      if (!fresh) {
+        if ((hit->flags & ACL_ONCHANGE) && st->dlc == dlc && memcmp(st->data, m.data, dlc) == 0) return;
+        if (hit->minIntervalMs && now - st->lastMs < hit->minIntervalMs) return;
+      }
+      st->key = key; st->lastMs = now; st->dlc = dlc;
+      memcpy(st->data, m.data, dlc);
+    }
+  }
+
+  AclFrame f;
+  f.ts  = (uint16_t)millis();
+  f.idf = m.identifier | (ext ? 0x80000000u : 0) | (m.rtr ? 0x40000000u : 0);
+  f.dlc = m.rtr ? 0 : dlc;
+  memcpy(f.data, m.data, f.dlc);
+  if (xQueueSend(bleQueue, &f, 0) != pdTRUE) { bleDroppedTotal++; bleDropFlag = true; }
+}
+
+// Отправка по BLE пачками: [кол-во][флаги] + кадры {ts16, id32, dlc, data}.
+// Пачка уходит, когда заполнена до MTU или прошло ACL_BATCH_MS с первого кадра.
+void bleTxTask(void*) {
+  static uint8_t buf[512];
+  size_t len = 2;
+  uint8_t cnt = 0;
+  uint32_t first = 0;
+  auto flush = [&]() {
+    if (!cnt) return;
+    buf[0] = cnt;
+    buf[1] = bleDropFlag ? 0x01 : 0x00;     // бит 0: были потери с прошлой пачки
+    bleDropFlag = false;
+    framesCharacteristic->setValue(buf, len);
+    framesCharacteristic->notify();
+    bleSentTotal += cnt;
+    len = 2; cnt = 0;
+  };
+  for (;;) {
+    AclFrame f;
+    bool got = xQueueReceive(bleQueue, &f, pdMS_TO_TICKS(cnt ? 5 : 200)) == pdTRUE;
+    size_t maxPayload = framesMtu > 3 ? framesMtu - 3 : 20;
+    if (maxPayload > sizeof(buf)) maxPayload = sizeof(buf);
+    if (got && framesSubscribed) {
+      size_t need = 7 + f.dlc;
+      if (len + need > maxPayload || cnt == 255) flush();
+      if (!cnt) first = millis();
+      memcpy(buf + len, &f.ts, 2);
+      memcpy(buf + len + 2, &f.idf, 4);
+      buf[len + 6] = f.dlc;
+      memcpy(buf + len + 7, f.data, f.dlc);
+      len += need; cnt++;
+    }
+    if (cnt && (!framesSubscribed || millis() - first >= ACL_BATCH_MS)) {
+      if (framesSubscribed) flush(); else { len = 2; cnt = 0; }
+    }
+  }
+}
+
 void canTask(void* param) {
 #if CAN_LISTEN_ONLY
   twai_general_config_t g_config =
@@ -2662,6 +2838,8 @@ void canTask(void* param) {
       // от лога, лёгкая операция (notify() асинхронно уходит в BLE-стек,
       // не блокирует приём следующих кадров). Если клиент не подписан —
       // notify() просто ничего не сделает, безопасно вызывать всегда.
+      if (framesSubscribed && aclCur->n) aclProcess(message);
+
       if (watchedCanId != 0 && message.identifier == watchedCanId) {
         WatchedFramePacket packet;
         packet.id = message.identifier;
@@ -3085,6 +3263,15 @@ void statsLoop() {
                   (out - lastOut) ? (float)(in - lastIn) / (out - lastOut) : 0.0f,
                   (unsigned)sbPct, (unsigned)qPct, (unsigned long)(dr - lastDropped), (unsigned long)dr);
   }
+  static uint32_t lastBleSent = 0, lastBleDrop = 0;
+  uint32_t bs = bleSentTotal, bd = bleDroppedTotal;
+  if (last != 0 && (bs != lastBleSent || bd != lastBleDrop))
+    Serial.printf("[STAT] BLE ACL: отправлено %.0f кадров/с, потеряно %lu (всего %lu)\n",
+                  (bs - lastBleSent) / sec, (unsigned long)(bd - lastBleDrop), (unsigned long)bd);
+  if (last != 0 && bd != lastBleDrop)
+    errLog("BLE ACL: потеряно %lu кадров за %.0f с — BLE не успевает, сузьте список или добавьте интервал/по изменению",
+           (unsigned long)(bd - lastBleDrop), sec);
+  lastBleSent = bs; lastBleDrop = bd;
   if (last != 0 && dr != lastDropped)
     errLog("CAN: потеряно %lu кадров за %.0f с (очередь заполнялась до %u%%, буфер кодера до %u%%)",
            (unsigned long)(dr - lastDropped), sec, (unsigned)qPct, (unsigned)sbPct);
