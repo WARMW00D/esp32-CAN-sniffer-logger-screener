@@ -114,7 +114,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.5.0"` (WROOM) / `"2.5.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.6.0"` (WROOM) / `"2.6.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -235,6 +235,10 @@ Device name `S3-CAN-Sniffer`, service `A1B2C3D4-0001-41A2-9E3B-000000000001`:
 | `…0002` | NOTIFY | Time sync `{millis, unixEpoch}`, sent from `onSubscribe()` |
 | `…0004` | WRITE | Select a CAN ID to watch (uint32) |
 | `…0005` | NOTIFY | Raw bytes of the watched ID |
+| `…0007` | WRITE, READ | ACL-style filter list for the raw frame stream (binary, up to 32 rules) |
+| `…0008` | NOTIFY | Raw CAN frames that passed the filter, batched into notifications |
+
+The HUD sends its filter list after each connection and decodes the frames itself. Protocol: [docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md).
 
 Also the standard Device Information Service (`0x180A`) with firmware version and build date.
 
