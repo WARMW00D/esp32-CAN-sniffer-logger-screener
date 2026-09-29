@@ -22,6 +22,9 @@ esp32s3_wroom_can_sd_ble_sync_server/
 esp32s3_can_sd_ble_sync_server/
     esp32s3_can_sd_ble_sync_server.ino          — CAN sniffer, ESP32-S3 Super Mini
     src/lzma/                                   — LZMA encoder (LZMA SDK, public domain)
+esp32s3_wroom_can_ble_replay/
+    esp32s3_wroom_can_ble_replay.ino            — bench replay of logs to the HUD over BLE (ESP32-S3-WROOM-1 CAM)
+    src/lzma/                                   — LZMA decoder (LZMA SDK, public domain)
 esp32cam_aithinker_video_ble_sync_client/
     esp32cam_aithinker_video_ble_sync_client.ino — camera, recording mode
 esp32cam_aithinker_aiming_stream/
@@ -241,6 +244,20 @@ Device name `S3-CAN-Sniffer`, service `A1B2C3D4-0001-41A2-9E3B-000000000001`:
 The HUD sends its filter list after each connection and decodes the frames itself. Protocol: [docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md).
 
 Also the standard Device Information Service (`0x180A`) with firmware version and build date.
+
+---
+
+## Bench replay for the HUD — `esp32s3_wroom_can_ble_replay`
+
+A stand-in for the sniffer on the desk: an ESP32-S3-WROOM-1 CAM board with the same BLE name (`S3-CAN-Sniffer`), UUIDs and ACL protocol, which plays back previously recorded logs instead of a live bus.
+
+1. Copy sniffer logs (`can_log_NNNN.txt.lzma` or `.txt`) into `/replay` on the microSD card — whole date folders are fine; files play in name order.
+2. Power the board and connect the HUD.
+3. When the HUD subscribes to `…0008` and writes its ACL to `…0007`, playback starts: frames that pass the filter are sent with the same timing as in the car. A new ACL (or reconnect) restarts from the beginning.
+
+Session boundaries (`BOOT` markers) insert a 1 s pause; continuation files play without a gap. Options: `REPLAY_LOOP`, `REPLAY_SPEED`, `REPLAY_SESSION_GAP_MS`. LED: blue — waiting for the HUD, green (+ white while frames are sent) — playing, red — no SD card or no files. `.gz` logs are skipped — unpack them with `tools/log_unpack.py` first. Don't power the replay board and the real sniffer at the same time: they advertise the same name.
+
+Arduino IDE: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM". Library: NimBLE-Arduino 2.x.
 
 ---
 

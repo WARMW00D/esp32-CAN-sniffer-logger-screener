@@ -22,6 +22,9 @@ esp32s3_wroom_can_sd_ble_sync_server/
 esp32s3_can_sd_ble_sync_server/
     esp32s3_can_sd_ble_sync_server.ino          — CAN-сниффер, ESP32-S3 Super Mini
     src/lzma/                                   — кодер LZMA (LZMA SDK, public domain)
+esp32s3_wroom_can_ble_replay/
+    esp32s3_wroom_can_ble_replay.ino            — стендовое проигрывание логов для HUD по BLE (ESP32-S3-WROOM-1 CAM)
+    src/lzma/                                   — декодер LZMA (LZMA SDK, public domain)
 esp32cam_aithinker_video_ble_sync_client/
     esp32cam_aithinker_video_ble_sync_client.ino — камера, режим записи
 esp32cam_aithinker_aiming_stream/
@@ -243,6 +246,20 @@ ESP32 сам подключается *обратно* к компьютеру, 
 HUD присылает свой список после каждого подключения и сам расшифровывает кадры. Протокол: [docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md).
 
 Плюс стандартный Device Information Service (`0x180A`) с версией прошивки и датой сборки.
+
+---
+
+## Стендовый проигрыватель для HUD — `esp32s3_wroom_can_ble_replay`
+
+Замена снифферу на столе: плата ESP32-S3-WROOM-1 CAM с тем же именем BLE (`S3-CAN-Sniffer`), теми же UUID и тем же протоколом ACL, но вместо живой шины она проигрывает записанные ранее логи.
+
+1. Скопируйте логи сниффера (`can_log_NNNN.txt.lzma` или `.txt`) в папку `/replay` на microSD — можно целыми папками по датам; файлы проигрываются по порядку имён.
+2. Включите плату и подключите HUD.
+3. Когда HUD подпишется на `…0008` и запишет свой список в `…0007`, начнётся проигрывание: кадры, прошедшие фильтр, уходят с теми же интервалами, что были в машине. Новый список ACL (или переподключение) — проигрывание с начала.
+
+На границах сессий (маркер `BOOT`) — пауза 1 с, файлы-продолжения идут без паузы. Параметры: `REPLAY_LOOP`, `REPLAY_SPEED`, `REPLAY_SESSION_GAP_MS`. Светодиод: синий — ждём HUD, зелёный (+ белый, пока уходят кадры) — идёт проигрывание, красный — нет SD-карты или файлов. Логи `.gz` пропускаются — сначала распакуйте их `tools/log_unpack.py`. Не включайте проигрыватель одновременно с настоящим сниффером: у них одинаковое имя в BLE.
+
+Arduino IDE: ESP32S3 Dev Module, Flash 16MB, PSRAM «OPI PSRAM». Библиотека: NimBLE-Arduino 2.x.
 
 ---
 
