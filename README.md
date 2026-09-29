@@ -114,7 +114,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.4.0"` (WROOM) / `"2.4.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.5.0"` (WROOM) / `"2.5.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -146,7 +146,7 @@ Connect to the access point and open `http://192.168.4.1`.
 
 - `/` — date/time with its source and the detected RTC, "Phone time" button, CAN bitrate, firmware version
 - `/errors` — error log right in the browser: latest entries first (last 300 lines), download `errors.log` / `errors.old.log`, clear the log
-- `/logs` — log folders by date, collapsed; press **+** to see a folder's files (count and total size are shown right away); single-file download, several folders as one TAR archive, or recursive deletion of the selected folders (with confirmation; the folder currently being written is protected)
+- `/logs` — log folders by date, collapsed; press **+** to see a folder's files (count and total size are shown right away); single-file download, several folders as one TAR archive (the file currently being written is closed automatically before the download and included complete; the next file, opened right after, is left out), or recursive deletion of the selected folders (with confirmation; the folder currently being written is protected)
 - If the SD card can't be mounted, the home page offers **Format card as FAT32** (password-protected like `/update`). Cards of 64 GB and larger usually come formatted as exFAT, which the Arduino-ESP32 core does not support. A mounted card is never formatted — use folder deletion on `/logs` instead. You can also format large cards as FAT32 on a PC with guiformat or Rufus (the standard Windows formatter refuses FAT32 above 32 GB).
 - `/update` — firmware upload from the browser (Basic Auth: `OTA_WEB_USER` / `OTA_PASSWORD`)
 
@@ -224,7 +224,7 @@ One frame per line (inside the archive):
 # 931204 ===== ACC OFF / SHUTDOWN =====
 ```
 
-Close reasons: `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT` (with `dropped=N` — frames lost since boot), `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt.lzma` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
+Close reasons: `ROTATE (download)`, `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT` (with `dropped=N` — frames lost since boot), `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt.lzma` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
 
 ### BLE
 
