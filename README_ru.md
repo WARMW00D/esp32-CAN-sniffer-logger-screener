@@ -22,6 +22,8 @@ esp32s3_wroom_can_sd_ble_sync_server/
 esp32s3_can_sd_ble_sync_server/
     esp32s3_can_sd_ble_sync_server.ino          — CAN-сниффер, ESP32-S3 Super Mini
     src/lzma/                                   — кодер LZMA (LZMA SDK, public domain)
+esp32s3_can_ble_gateway/
+    esp32s3_can_ble_gateway.ino                 — шлюз CAN → BLE только для HUD (Super Mini, без SD и часов)
 esp32s3_wroom_can_ble_replay/
     esp32s3_wroom_can_ble_replay.ino            — стендовое проигрывание логов для HUD по BLE (ESP32-S3-WROOM-1 CAM)
     src/lzma/                                   — декодер LZMA (LZMA SDK, public domain)
@@ -35,7 +37,8 @@ esp32s3cam_ov5640_aiming_stream/
     esp32s3cam_ov5640_aiming_stream.ino          — камера ESP32-S3 + OV5640, режим юстировки
 docs/
     sniffer_supermini.svg, sniffer_supermini_sd_ams1117.svg, sniffer_wroom.svg,
-    camera_aithinker.svg, camera_s3_ov5640.svg   — схемы подключения
+    gateway_supermini.svg, camera_aithinker.svg,
+    camera_s3_ov5640.svg                         — схемы подключения
 tools/
     can_time_decode.py                           — дата/время и пробег из CAN-логов
     log_unpack.py                                — распаковка логов .txt.lzma / .txt.gz (и оборванных), склейка папки
@@ -52,6 +55,7 @@ README_ru.md
 | CAN-сниффер, ESP32-S3-WROOM-1 CAM | [docs/sniffer_wroom.svg](docs/sniffer_wroom.svg) |
 | CAN-сниффер, ESP32-S3 Super Mini, простой SD-модуль на 3.3 В (основная) | [docs/sniffer_supermini.svg](docs/sniffer_supermini.svg) |
 | CAN-сниффер, ESP32-S3 Super Mini, SD-модуль с AMS1117, питающим периферию | [docs/sniffer_supermini_sd_ams1117.svg](docs/sniffer_supermini_sd_ams1117.svg) |
+| Шлюз CAN → BLE для HUD, ESP32-S3 Super Mini | [docs/gateway_supermini.svg](docs/gateway_supermini.svg) |
 | Камера, AI-Thinker ESP32-CAM | [docs/camera_aithinker.svg](docs/camera_aithinker.svg) |
 | Камера, ESP32-S3-WROOM-1 CAM + OV5640 | [docs/camera_s3_ov5640.svg](docs/camera_s3_ov5640.svg) |
 
@@ -249,6 +253,10 @@ HUD присылает свой список после каждого подк�
 Плюс стандартный Device Information Service (`0x180A`) с версией прошивки и датой сборки.
 
 ---
+
+## Шлюз CAN → BLE для HUD — `esp32s3_can_ble_gateway`
+
+Упрощённый сниффер для постоянной установки вместе с HUD: ESP32-S3 Super Mini и CAN-трансивер с питанием от линии зажигания (ACC) — без SD-карты, часов, Wi-Fi, сна и потребления на стоянке. Он только принимает шину и отдаёт по BLE кадры, прошедшие фильтр ACL от HUD. Для HUD он неотличим от сниффера: то же имя BLE (`S3-CAN-Sniffer`), те же UUID и протокол ([docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md)). Характеристика синхронизации времени `…0002` оставлена для камеры; дата и время берутся из кадра CAN 0x6B2. Светодиод: синий — ждём HUD, зелёный (+ белый, пока уходят кадры) — идёт поток, красный — не запустился CAN. Параметры: `CAN_BITRATE`, `CAN_LISTEN_ONLY`. Схема: [docs/gateway_supermini.svg](docs/gateway_supermini.svg). Прошивка — по USB (Wi-Fi и OTA нет).
 
 ## Стендовый проигрыватель для HUD — `esp32s3_wroom_can_ble_replay`
 

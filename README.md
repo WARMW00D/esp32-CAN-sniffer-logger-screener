@@ -22,6 +22,8 @@ esp32s3_wroom_can_sd_ble_sync_server/
 esp32s3_can_sd_ble_sync_server/
     esp32s3_can_sd_ble_sync_server.ino          — CAN sniffer, ESP32-S3 Super Mini
     src/lzma/                                   — LZMA encoder (LZMA SDK, public domain)
+esp32s3_can_ble_gateway/
+    esp32s3_can_ble_gateway.ino                 — CAN → BLE gateway for the HUD only (Super Mini, no SD, no RTC)
 esp32s3_wroom_can_ble_replay/
     esp32s3_wroom_can_ble_replay.ino            — bench replay of logs to the HUD over BLE (ESP32-S3-WROOM-1 CAM)
     src/lzma/                                   — LZMA decoder (LZMA SDK, public domain)
@@ -35,7 +37,8 @@ esp32s3cam_ov5640_aiming_stream/
     esp32s3cam_ov5640_aiming_stream.ino          — ESP32-S3 + OV5640 camera, aiming mode
 docs/
     sniffer_supermini.svg, sniffer_supermini_sd_ams1117.svg, sniffer_wroom.svg,
-    camera_aithinker.svg, camera_s3_ov5640.svg   — wiring diagrams
+    gateway_supermini.svg, camera_aithinker.svg,
+    camera_s3_ov5640.svg                         — wiring diagrams
 tools/
     can_time_decode.py                           — date/time and odometer from CAN logs
     log_unpack.py                                — unpack .txt.lzma / .txt.gz logs (also truncated ones), join a folder
@@ -52,6 +55,7 @@ README_ru.md
 | CAN sniffer, ESP32-S3-WROOM-1 CAM | [docs/sniffer_wroom.svg](docs/sniffer_wroom.svg) |
 | CAN sniffer, ESP32-S3 Super Mini, plain 3.3 V SD module (default) | [docs/sniffer_supermini.svg](docs/sniffer_supermini.svg) |
 | CAN sniffer, ESP32-S3 Super Mini, SD module with AMS1117 feeding the peripherals | [docs/sniffer_supermini_sd_ams1117.svg](docs/sniffer_supermini_sd_ams1117.svg) |
+| CAN → BLE gateway for the HUD, ESP32-S3 Super Mini | [docs/gateway_supermini.svg](docs/gateway_supermini.svg) |
 | Camera, AI-Thinker ESP32-CAM | [docs/camera_aithinker.svg](docs/camera_aithinker.svg) |
 | Camera, ESP32-S3-WROOM-1 CAM + OV5640 | [docs/camera_s3_ov5640.svg](docs/camera_s3_ov5640.svg) |
 
@@ -247,6 +251,10 @@ The HUD sends its filter list after each connection and decodes the frames itsel
 Also the standard Device Information Service (`0x180A`) with firmware version and build date.
 
 ---
+
+## CAN → BLE gateway for the HUD — `esp32s3_can_ble_gateway`
+
+A stripped-down sniffer for permanent installation with the HUD: an ESP32-S3 Super Mini and a CAN transceiver, powered from the ignition line (ACC) — no SD card, no RTC, no Wi-Fi, no sleep logic and no parking current. It only receives the bus and streams the frames that pass the HUD's ACL over BLE. For the HUD it is identical to the sniffer: same BLE name (`S3-CAN-Sniffer`), UUIDs and protocol ([docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md)). The time-sync characteristic `…0002` is kept for the camera; its date/time comes from CAN frame 0x6B2. LED: blue — waiting for the HUD, green (+ white while frames are sent) — streaming, red — CAN failed to start. Options: `CAN_BITRATE`, `CAN_LISTEN_ONLY`. Wiring: [docs/gateway_supermini.svg](docs/gateway_supermini.svg). Flashing — over USB (there is no Wi-Fi/OTA).
 
 ## Bench replay for the HUD — `esp32s3_wroom_can_ble_replay`
 
