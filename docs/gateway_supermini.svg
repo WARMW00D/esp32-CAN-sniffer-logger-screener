@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="945" viewBox="0 0 1240 945">
+<rect x="0" y="0" width="1240" height="945" fill="#ffffff"/>
+<text x="24" y="38" font-family="Segoe UI, Arial, sans-serif" font-size="22" fill="#222" text-anchor="start" font-weight="bold">CAN → BLE gateway for the HUD — ESP32-S3 Super Mini</text>
+<text x="24" y="62" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#555" text-anchor="start" font-weight="normal">esp32s3_can_ble_gateway · powered from ACC · no SD, no RTC — CAN reception and BLE stream to the HUD</text>
+<rect x="30" y="110" width="190" height="330" rx="8" fill="#eceff1" stroke="#37474f" stroke-width="1.6"/>
+<text x="125.0" y="132" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#222" text-anchor="middle" font-weight="bold">Car</text>
+<text x="125.0" y="150" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">I-CAN, 500 kbit/s</text>
+<circle cx="220" cy="180" r="3.6" fill="#c62828"/>
+<text x="211" y="184.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">ACC +12 V (term. 15)</text>
+<circle cx="220" cy="290" r="3.6" fill="#424242"/>
+<text x="211" y="294.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">GND (term. 31)</text>
+<circle cx="220" cy="360" r="3.6" fill="#6a1b9a"/>
+<text x="211" y="364.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">CAN-H</text>
+<circle cx="220" cy="400" r="3.6" fill="#6a1b9a"/>
+<text x="211" y="404.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">CAN-L</text>
+<polygon points="220,290 228,280 266,280 266,300 228,300" fill="#424242" opacity="0.13" stroke="#424242" stroke-width="1.4"/>
+<text x="247.0" y="294.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#424242" text-anchor="middle" font-weight="bold">GND</text>
+<polyline points="220,180 300,180" fill="none" stroke="#c62828" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="300" y="158" width="70" height="44" rx="8" fill="#fff" stroke="#37474f" stroke-width="1.6"/>
+<text x="335.0" y="180" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#222" text-anchor="middle" font-weight="bold">Fuse</text>
+<text x="335" y="216" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">0.5–1 A</text>
+<polyline points="370,180 440,180" fill="none" stroke="#c62828" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="405" cy="180" r="4" fill="#c62828"/>
+<polyline points="405,180 405,192" fill="none" stroke="#c62828" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polygon points="396,209 414,209 405,193" fill="#fff" stroke="#37474f" stroke-width="1.8"/>
+<polyline points="392,197 396,193 414,193 418,189" fill="none" stroke="#37474f" stroke-width="2.2"/>
+<polyline points="405,209 405,220" fill="none" stroke="#424242" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="405" y1="220" x2="405" y2="230" stroke="#424242" stroke-width="2"/>
+<line x1="394" y1="230" x2="416" y2="230" stroke="#424242" stroke-width="2"/>
+<line x1="398" y1="234" x2="412" y2="234" stroke="#424242" stroke-width="2"/>
+<line x1="402" y1="238" x2="408" y2="238" stroke="#424242" stroke-width="2"/>
+<text x="405" y="256" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">TVS SMBJ18A</text>
+<rect x="440" y="150" width="170" height="60" rx="8" fill="#fff3e0" stroke="#37474f" stroke-width="1.6"/>
+<text x="525.0" y="172" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#222" text-anchor="middle" font-weight="bold">DC-DC 12→5 V</text>
+<text x="525.0" y="190" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">from ignition line</text>
+<polyline points="525,210 525,224" fill="none" stroke="#424242" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="525" y1="224" x2="525" y2="234" stroke="#424242" stroke-width="2"/>
+<line x1="514" y1="234" x2="536" y2="234" stroke="#424242" stroke-width="2"/>
+<line x1="518" y1="238" x2="532" y2="238" stroke="#424242" stroke-width="2"/>
+<line x1="522" y1="242" x2="528" y2="242" stroke="#424242" stroke-width="2"/>
+<text x="540" y="238" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#555" text-anchor="start" font-weight="normal">GND</text>
+<polyline points="610,180 660,180" fill="none" stroke="#e65100" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polygon points="671,171 671,189 687,180" fill="#fff" stroke="#37474f" stroke-width="1.8"/>
+<line x1="687" y1="171" x2="687" y2="189" stroke="#37474f" stroke-width="2.2"/>
+<text x="680" y="165" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="middle" font-weight="normal">Schottky</text>
+<polyline points="689,180 720,180" fill="none" stroke="#e65100" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="702" y="286" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">5V node ≈4.7 V</text>
+<circle cx="702" cy="180" r="4" fill="#e65100"/>
+<polyline points="702,180 702,196 662,196" fill="none" stroke="#e65100" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="702,196 742,196" fill="none" stroke="#e65100" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="662" y1="196" x2="662" y2="207" stroke="#37474f" stroke-width="2"/>
+<line x1="650" y1="207" x2="674" y2="207" stroke="#37474f" stroke-width="2.4"/>
+<path d="M 650 215 Q 662 210 674 215" fill="none" stroke="#37474f" stroke-width="2.4"/>
+<line x1="662" y1="213" x2="662" y2="226" stroke="#37474f" stroke-width="2"/>
+<text x="680" y="216" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal"></text>
+<text x="642" y="206" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#37474f" text-anchor="start" font-weight="bold">+</text>
+<line x1="742" y1="196" x2="742" y2="207" stroke="#37474f" stroke-width="2"/>
+<line x1="730" y1="207" x2="754" y2="207" stroke="#37474f" stroke-width="2.4"/>
+<line x1="730" y1="214" x2="754" y2="214" stroke="#37474f" stroke-width="2.4"/>
+<line x1="742" y1="214" x2="742" y2="226" stroke="#37474f" stroke-width="2"/>
+<line x1="662" y1="226" x2="662" y2="236" stroke="#424242" stroke-width="2"/>
+<line x1="651" y1="236" x2="673" y2="236" stroke="#424242" stroke-width="2"/>
+<line x1="655" y1="240" x2="669" y2="240" stroke="#424242" stroke-width="2"/>
+<line x1="659" y1="244" x2="665" y2="244" stroke="#424242" stroke-width="2"/>
+<line x1="742" y1="226" x2="742" y2="236" stroke="#424242" stroke-width="2"/>
+<line x1="731" y1="236" x2="753" y2="236" stroke="#424242" stroke-width="2"/>
+<line x1="735" y1="240" x2="749" y2="240" stroke="#424242" stroke-width="2"/>
+<line x1="739" y1="244" x2="745" y2="244" stroke="#424242" stroke-width="2"/>
+<text x="702" y="270" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">470 µF + 100 nF</text>
+<polygon points="720,180 728,170 762,170 762,190 728,190" fill="#e65100" opacity="0.13" stroke="#e65100" stroke-width="1.4"/>
+<text x="745.0" y="184.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#e65100" text-anchor="middle" font-weight="bold">5V</text>
+<rect x="560" y="330" width="260" height="390" rx="8" fill="#e3f2fd" stroke="#37474f" stroke-width="1.6"/>
+<text x="690.0" y="352" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#222" text-anchor="middle" font-weight="bold">ESP32-S3 Super Mini</text>
+<text x="690.0" y="370" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">FH4R2 · QSPI PSRAM · RGB LED GPIO48</text>
+<circle cx="560" cy="410" r="3.6" fill="#e65100"/>
+<text x="569" y="414.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="start" font-weight="normal">5V</text>
+<polygon points="560,410 552,400 518,400 518,420 552,420" fill="#e65100" opacity="0.13" stroke="#e65100" stroke-width="1.4"/>
+<text x="535.0" y="414.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#e65100" text-anchor="middle" font-weight="bold">5V</text>
+<circle cx="560" cy="445" r="3.6" fill="#424242"/>
+<text x="569" y="449.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="start" font-weight="normal">GND</text>
+<polygon points="560,445 552,435 514,435 514,455 552,455" fill="#424242" opacity="0.13" stroke="#424242" stroke-width="1.4"/>
+<text x="533.0" y="449.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#424242" text-anchor="middle" font-weight="bold">GND</text>
+<circle cx="560" cy="580" r="3.6" fill="#1565c0"/>
+<text x="569" y="584.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="start" font-weight="normal">GPIO4  TWAI TX</text>
+<circle cx="560" cy="620" r="3.6" fill="#1565c0"/>
+<text x="569" y="624.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="start" font-weight="normal">GPIO5  TWAI RX</text>
+<circle cx="820" cy="440" r="3.6" fill="#b8860b"/>
+<text x="811" y="444.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">3V3</text>
+<polygon points="820,440 828,430 874,430 874,450 828,450" fill="#b8860b" opacity="0.13" stroke="#b8860b" stroke-width="1.4"/>
+<text x="851.0" y="444.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#b8860b" text-anchor="middle" font-weight="bold">3V3p</text>
+<text x="690.0" y="704" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">CPU 160 MHz recommended (less heat)</text>
+<rect x="250" y="640" width="230" height="225" rx="8" fill="#ede7f6" stroke="#37474f" stroke-width="1.6"/>
+<text x="365.0" y="662" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#222" text-anchor="middle" font-weight="bold">CAN transceiver</text>
+<text x="365.0" y="680" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">SN65HVD230 (3.3 V)</text>
+<text x="365.0" y="695" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">or TJA1051T/3</text>
+<circle cx="250" cy="745" r="3.6" fill="#6a1b9a"/>
+<text x="259" y="749.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="start" font-weight="normal">CANH</text>
+<circle cx="250" cy="785" r="3.6" fill="#6a1b9a"/>
+<text x="259" y="789.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="start" font-weight="normal">CANL</text>
+<circle cx="480" cy="725" r="3.6" fill="#1565c0"/>
+<text x="471" y="729.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">CTX (D / TXD)</text>
+<circle cx="480" cy="765" r="3.6" fill="#1565c0"/>
+<text x="471" y="769.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">CRX (R / RXD)</text>
+<circle cx="480" cy="810" r="3.6" fill="#b8860b"/>
+<text x="471" y="814.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">VCC</text>
+<circle cx="480" cy="840" r="3.6" fill="#424242"/>
+<text x="471" y="844.5" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#222" text-anchor="end" font-weight="normal">GND</text>
+<polygon points="480,810 488,800 534,800 534,820 488,820" fill="#b8860b" opacity="0.13" stroke="#b8860b" stroke-width="1.4"/>
+<text x="511.0" y="814.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#b8860b" text-anchor="middle" font-weight="bold">3V3p</text>
+<polygon points="480,840 488,830 526,830 526,850 488,850" fill="#424242" opacity="0.13" stroke="#424242" stroke-width="1.4"/>
+<text x="507.0" y="844.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#424242" text-anchor="middle" font-weight="bold">GND</text>
+<polyline points="220,360 232,360 232,745 250,745" fill="none" stroke="#6a1b9a" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="220,400 240,400 240,785 250,785" fill="none" stroke="#6a1b9a" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7,5"/>
+<text x="150" y="560" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#6a1b9a" text-anchor="middle" font-weight="normal">twisted pair</text>
+<text x="150" y="576" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#c62828" text-anchor="middle" font-weight="bold">no 120 Ω on module!</text>
+<polyline points="560,580 525,580 525,725 480,725" fill="none" stroke="#1565c0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="560,620 540,620 540,765 480,765" fill="none" stroke="#1565c0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="365" y="888" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#1565c0" text-anchor="middle" font-weight="bold">TX → TX, RX → RX (not crossed like UART)</text>
+<rect x="960" y="520" width="230" height="120" rx="8" fill="#eceff1" stroke="#37474f" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="1075.0" y="542" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#222" text-anchor="middle" font-weight="bold">HUD</text>
+<text x="1075.0" y="560" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">BLE: "S3-CAN-Sniffer"</text>
+<text x="1075.0" y="575" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">ACL …0007 → frames …0008</text>
+<polyline points="820,580 960,580" fill="none" stroke="#1565c0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7,5"/>
+<text x="890" y="571" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#1565c0" text-anchor="middle" font-weight="normal">BLE</text>
+<rect x="960" y="670" width="230" height="70" rx="8" fill="#eceff1" stroke="#37474f" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="1075.0" y="692" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#222" text-anchor="middle" font-weight="bold">Camera (optional)</text>
+<text x="1075.0" y="710" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#555" text-anchor="middle" font-weight="normal">time sync …0002</text>
+<polyline points="820,700 960,700" fill="none" stroke="#1565c0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7,5"/>
+<polygon points="1080,140 1072,130 1026,130 1026,150 1072,150" fill="#b8860b" opacity="0.13" stroke="#b8860b" stroke-width="1.4"/>
+<text x="1049.0" y="144.5" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#b8860b" text-anchor="middle" font-weight="bold">3V3p</text>
+<polyline points="1080,140 1220,140" fill="none" stroke="#b8860b" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="1140" cy="140" r="4" fill="#b8860b"/>
+<line x1="1140" y1="140" x2="1140" y2="151" stroke="#37474f" stroke-width="2"/>
+<line x1="1128" y1="151" x2="1152" y2="151" stroke="#37474f" stroke-width="2.4"/>
+<path d="M 1128 159 Q 1140 154 1152 159" fill="none" stroke="#37474f" stroke-width="2.4"/>
+<line x1="1140" y1="157" x2="1140" y2="170" stroke="#37474f" stroke-width="2"/>
+<text x="1158" y="160" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal"></text>
+<text x="1120" y="150" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#37474f" text-anchor="start" font-weight="bold">+</text>
+<line x1="1140" y1="170" x2="1140" y2="180" stroke="#424242" stroke-width="2"/>
+<line x1="1129" y1="180" x2="1151" y2="180" stroke="#424242" stroke-width="2"/>
+<line x1="1133" y1="184" x2="1147" y2="184" stroke="#424242" stroke-width="2"/>
+<line x1="1137" y1="188" x2="1143" y2="188" stroke="#424242" stroke-width="2"/>
+<circle cx="1220" cy="140" r="4" fill="#b8860b"/>
+<line x1="1220" y1="140" x2="1220" y2="151" stroke="#37474f" stroke-width="2"/>
+<line x1="1208" y1="151" x2="1232" y2="151" stroke="#37474f" stroke-width="2.4"/>
+<line x1="1208" y1="158" x2="1232" y2="158" stroke="#37474f" stroke-width="2.4"/>
+<line x1="1220" y1="158" x2="1220" y2="170" stroke="#37474f" stroke-width="2"/>
+<line x1="1220" y1="170" x2="1220" y2="180" stroke="#424242" stroke-width="2"/>
+<line x1="1209" y1="180" x2="1231" y2="180" stroke="#424242" stroke-width="2"/>
+<line x1="1213" y1="184" x2="1227" y2="184" stroke="#424242" stroke-width="2"/>
+<line x1="1217" y1="188" x2="1223" y2="188" stroke="#424242" stroke-width="2"/>
+<text x="1020" y="212" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#555" text-anchor="start" font-weight="normal">100 µF + 100 nF at the 3V3 pin;</text>
+<text x="1020" y="227" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#555" text-anchor="start" font-weight="normal">100 nF at transceiver VCC</text>
+<line x1="870" y1="110" x2="896" y2="110" stroke="#c62828" stroke-width="3"/>
+<text x="904" y="114" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">+12 V</text>
+<line x1="870" y1="130" x2="896" y2="130" stroke="#e65100" stroke-width="3"/>
+<text x="904" y="134" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">5 V</text>
+<line x1="870" y1="150" x2="896" y2="150" stroke="#b8860b" stroke-width="3"/>
+<text x="904" y="154" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">3.3 V</text>
+<line x1="870" y1="170" x2="896" y2="170" stroke="#424242" stroke-width="3"/>
+<text x="904" y="174" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">GND</text>
+<line x1="870" y1="190" x2="896" y2="190" stroke="#1565c0" stroke-width="3"/>
+<text x="904" y="194" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">TWAI (logic)</text>
+<line x1="870" y1="210" x2="896" y2="210" stroke="#6a1b9a" stroke-width="3"/>
+<text x="904" y="214" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">CAN bus</text>
+<line x1="870" y1="230" x2="896" y2="230" stroke="#1565c0" stroke-width="3"/>
+<text x="904" y="234" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">BLE (wireless)</text>
+<rect x="560" y="745" width="650" height="160" rx="8" fill="#fffde7" stroke="#f9a825" stroke-width="1.3"/>
+<text x="574" y="767" font-family="Segoe UI, Arial, sans-serif" font-size="13.5" fill="#222" text-anchor="start" font-weight="bold">Notes</text>
+<text x="574" y="787" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">All GND are common (car GND = board GND).</text>
+<text x="574" y="805" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Same-name flags (5V, 3V3p, GND) are connected; 3V3p = Super Mini 3V3 pin.</text>
+<text x="574" y="823" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">TJA1051T/3: VCC = 5V, VIO = 3.3 V (ESP), S = VIO in the car (hardware silent).</text>
+<text x="574" y="841" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Powered from the ignition line only: no sleep, no ACC sensing, zero parking current.</text>
+<text x="574" y="859" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">No Wi-Fi, no SD: the Super Mini LDO easily powers the ESP32 and the transceiver.</text>
+<text x="574" y="877" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">CAN_LISTEN_ONLY 1 in the car.</text>
+<text x="574" y="895" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Firmware: esp32s3_can_ble_gateway. Time for the camera comes from CAN 0x6B2.</text>
+</svg>
