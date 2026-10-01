@@ -18,10 +18,12 @@
   Подключение (ESP32-S3 Super Mini):
     IO4 (TWAI TX) ->  CTX (D, TXD) трансивера
     IO5 (TWAI RX) <-  CRX (R, RXD) трансивера
+    Трансивер — только TJA1051T/3 (CJMCU-1051): VCC 5 В, VIO 3.3 В,
+    S -> VIO (аппаратный silent: передатчик отключён физически, шину
+    не займёт ни при каком сбое или перезагрузке ESP32).
     !!! TX к TX, RX к RX — линии НЕ перекрещиваются, как в UART.
-    SN65HVD230: VCC 3.3 В от пина 3V3 платы, Rs -> GND
-    TJA1051T/3: VCC 5 В, VIO 3.3 В, S -> VIO (в машине — аппаратный silent)
     !!! Встроенный 120 Ом на модуле трансивера для врезки в машину снять.
+    Стенд с одним другим узлом: S -> GND и CAN_LISTEN_ONLY 0.
 
   Настройки Arduino IDE: ESP32S3 Dev Module, Flash 4MB, PSRAM "QSPI PSRAM"
   (или Disabled — PSRAM не нужна), USB CDC On Boot "Enabled".
@@ -33,7 +35,7 @@
 #include <time.h>
 #include "driver/twai.h"
 
-#define FW_VERSION   "1.1.0"
+#define FW_VERSION   "1.1.1"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 // ---------- CAN ----------
