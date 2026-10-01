@@ -344,12 +344,14 @@ During development the sniffer used an SN65HVD230 transceiver and was connected 
 - gearbox (02): **U010300 — gear shift control module, no communication**, recorded at 76 km/h;
 - gateway (19), earlier: *CAN Infotainment no communication* together with BAP timeouts.
 
-The problem persisted **with the ignition off, while the ESP32 was in deep sleep**. Most likely cause: the SN65HVD230 has no silent pin and no dominant time-out; while the ESP32 does not drive the TX pin (deep sleep, boot, reset) the transceiver input floats and it can hold the bus dominant, blocking all traffic. `CAN_LISTEN_ONLY` does not help here — it only works while the CAN driver is running. A loosely twisted splice on the bus wires may have contributed.
+The fault appeared **both while the sniffer was running (in `LISTEN_ONLY`) and with the ignition off, while the ESP32 was in deep sleep**, and went away once the sniffer was removed. Since a listen-only controller never transmits, the most likely cause is a **faulty SN65HVD230 chip** disturbing the bus by itself (these modules often carry questionable chips). On top of that, the SN65HVD230 has no silent pin and no dominant time-out: whenever the ESP32 does not drive the TX pin (deep sleep, boot, reset), its input floats and it may hold the bus dominant. `CAN_LISTEN_ONLY` cannot protect against either — it only controls the CAN controller, not a broken or undriven transceiver. A loosely twisted splice on the bus wires may have contributed.
 
 **Rules that follow from this:**
 
 - **Only TJA1051T/3 with S tied to VIO.** In silent mode the transmitter is disabled in hardware, the TXD input is pulled up internally, and there is a dominant time-out — the device cannot disturb the bus whatever the firmware or the ESP32 is doing. This applies to the sniffers, the gateway and the HUD.
 - **Never use SN65HVD230 or other transceivers without a silent pin on a car bus.**
+- **Use genuine chips.** Silent mode protects against firmware and ESP32 problems, but not against a damaged transceiver. Boards with unknown chips: replace the chip with a genuine one from a reliable distributor.
+- **Check the transceiver on the bench before installing**, unpowered and powered, both with the device running and asleep: CANH–GND and CANL–GND must not be low-resistance; CANH–CANL voltage with no other nodes is ~0 V.
 - **Solder and heat-shrink the splices** into the CAN wires; twisted joints loosen with vibration.
 - **After installing, clear the DTCs, drive for a few days and read them again** in all control units (gateway 19, gearbox 02, selector 81, dashboard 17). If anything related to CAN-Infotainment or the selector appears — disconnect the device from the bus immediately.
 - On the bench, before installing: CRX idles at ~3.3 V; S is connected to VIO; no 120 Ω between CANH and CANL; **with the device asleep the CANH–CANL voltage is ~0 V** (≈2 V means the bus is held dominant).
