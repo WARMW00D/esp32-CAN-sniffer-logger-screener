@@ -2,6 +2,8 @@
 
 [Русская версия](README_ru.md)
 
+> ⚠️ **Read before connecting anything to the car.** On the Audi A4 B9 (MLB-Evo) the **CAN-Infotainment bus also carries the automatic transmission gear selector (E313)** — confirmed by the wiring diagram; other MLB-Evo models are likely the same, check yours. A faulty or wrongly chosen transceiver on this bus can disconnect the selector from the gearbox — including while driving. This happened during development: see [Safety](#safety). Use **only TJA1051T/3 with the S pin tied to VIO**.
+
 A pair of independent devices for reverse-engineering a car's CAN bus:
 
 - **CAN sniffer** (ESP32-S3) — passively logs every CAN frame to an SD card with real time-of-day, sleeps when the ignition is off, and provides a Wi-Fi portal for downloading logs, setting the clock, choosing the CAN bitrate and updating firmware.
@@ -79,7 +81,7 @@ Common parts:
 
 | Part | Notes |
 |---|---|
-| CAN transceiver | SN65HVD230, or TJA1051T/3 (e.g. CJMCU-1051 board with a genuine chip) |
+| CAN transceiver | **TJA1051T/3 only** (e.g. a CJMCU-1051 board with a genuine chip): VCC 5 V, VIO 3.3 V, **S tied to VIO** — hardware silent mode |
 | RTC (optional) | DS3231 or PCF8563, detected automatically. Without it, time comes from the CAN bus (see *Time*). DS3231 MH board: **charging circuit must be removed** when using a CR2032 |
 | Unneeded LEDs | **Remove them** on all boards and modules (power indicators on the SD, RTC, transceiver and DC-DC modules and on the ESP32 boards): they stay lit all the time, including in sleep, and make up most of the parking current. The status LED (WS2812) is controlled by the firmware and switched off before sleep |
 | Optocoupler (PC817 or similar) | ACC (ignition) detection, 1.2–1.5 kΩ series resistor on the 12 V side |
@@ -99,7 +101,7 @@ On the WROOM CAM board GPIO4–18 are routed to the camera connector, so the sni
 
 > **TX goes to TX, RX to RX.** Unlike UART, the lines are *not* crossed: the names on both the ESP32 and the transceiver refer to the same direction (towards / from the bus).
 
-**TJA1051T/3:** VCC = 5 V, VIO = 3.3 V (from the ESP32), S = VIO for hardware silent mode in the car (the transceiver physically cannot transmit), S = GND on the bench. Before connecting to the ESP32, check that CRX idles at ~3.3 V, not 5 V.
+**Transceiver: TJA1051T/3 only.** VCC = 5 V, VIO = 3.3 V (sets the logic levels for the ESP32), **S = VIO in the car**: silent mode, the transmitter is disabled in hardware, so the transceiver can never drive the bus — not while the ESP32 boots, reboots, sleeps or crashes. Transceivers without such a pin (e.g. SN65HVD230) can hold the bus dominant while the TX pin is not driven and knock out other control units — don't use them in a car. With S = VIO keep `CAN_LISTEN_ONLY 1`: in NORMAL mode the controller would miss its own ACKs and go into error states. Bench with a single other node: S = GND and `CAN_LISTEN_ONLY 0`. Before connecting to the ESP32, check that CRX idles at ~3.3 V, not 5 V.
 
 **Termination:** the car's bus is already terminated. CANH–CANL on the sniffer must measure tens of kΩ (transceiver input). If you see ~120 Ω, remove the resistor on the transceiver board.
 
@@ -121,7 +123,7 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.7.0"` (WROOM) / `"2.7.0"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.7.1"` (WROOM) / `"2.7.1"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -254,7 +256,7 @@ Also the standard Device Information Service (`0x180A`) with firmware version an
 
 ## CAN → BLE gateway for the HUD — `esp32s3_can_ble_gateway`
 
-A stripped-down sniffer for permanent installation with the HUD: an ESP32-S3 Super Mini and a CAN transceiver, powered from the ignition line (ACC) — no SD card, no RTC, no Wi-Fi, no sleep logic and no parking current. It only receives the bus and streams the frames that pass the HUD's ACL over BLE. For the HUD it is identical to the sniffer: same BLE name (`S3-CAN-Sniffer`), UUIDs and protocol ([docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md)). The time-sync characteristic `…0002` is kept for the camera; its date/time comes from CAN frame 0x6B2. LED: blue — waiting for the HUD, green (+ white while frames are sent) — streaming, red — CAN failed to start. Options: `CAN_BITRATE`, `CAN_LISTEN_ONLY`. Wiring: [docs/gateway_supermini.svg](docs/gateway_supermini.svg). Flashing — over USB (there is no Wi-Fi/OTA).
+A stripped-down sniffer for permanent installation with the HUD: an ESP32-S3 Super Mini and a CAN transceiver, powered from the ignition line (ACC) — no SD card, no RTC, no Wi-Fi, no sleep logic and no parking current. It only receives the bus and streams the frames that pass the HUD's ACL over BLE. For the HUD it is identical to the sniffer: same BLE name (`S3-CAN-Sniffer`), UUIDs and protocol ([docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md)). The time-sync characteristic `…0002` is kept for the camera; its date/time comes from CAN frame 0x6B2. LED: blue — waiting for the HUD, green (+ white while frames are sent) — streaming, red — CAN failed to start. Options: `CAN_BITRATE`, `CAN_LISTEN_ONLY`. Transceiver: TJA1051T/3 with S = VIO, as for the sniffer. Wiring: [docs/gateway_supermini.svg](docs/gateway_supermini.svg). Flashing — over USB (there is no Wi-Fi/OTA).
 
 ## Bench replay for the HUD — `esp32s3_wroom_can_ble_replay`
 
@@ -334,6 +336,27 @@ The ESP32-S3 has no IRAM shortage, so recording and aiming could be merged into 
 
 ## Safety
 
+### Incident: the gear selector lost communication
+
+During development the sniffer used an SN65HVD230 transceiver and was connected to CAN-Infotainment. On MLB-Evo the **automatic transmission selector E313 is on this bus** (connector T10g pins 3/4, CAN-Infotainment Low/High). With the sniffer connected, the selector lost communication with the gearbox:
+
+- selector (81): *data bus faulty*, *data bus missing message*;
+- gearbox (02): **U010300 — gear shift control module, no communication**, recorded at 76 km/h;
+- gateway (19), earlier: *CAN Infotainment no communication* together with BAP timeouts.
+
+The problem persisted **with the ignition off, while the ESP32 was in deep sleep**. Most likely cause: the SN65HVD230 has no silent pin and no dominant time-out; while the ESP32 does not drive the TX pin (deep sleep, boot, reset) the transceiver input floats and it can hold the bus dominant, blocking all traffic. `CAN_LISTEN_ONLY` does not help here — it only works while the CAN driver is running. A loosely twisted splice on the bus wires may have contributed.
+
+**Rules that follow from this:**
+
+- **Only TJA1051T/3 with S tied to VIO.** In silent mode the transmitter is disabled in hardware, the TXD input is pulled up internally, and there is a dominant time-out — the device cannot disturb the bus whatever the firmware or the ESP32 is doing. This applies to the sniffers, the gateway and the HUD.
+- **Never use SN65HVD230 or other transceivers without a silent pin on a car bus.**
+- **Solder and heat-shrink the splices** into the CAN wires; twisted joints loosen with vibration.
+- **After installing, clear the DTCs, drive for a few days and read them again** in all control units (gateway 19, gearbox 02, selector 81, dashboard 17). If anything related to CAN-Infotainment or the selector appears — disconnect the device from the bus immediately.
+- On the bench, before installing: CRX idles at ~3.3 V; S is connected to VIO; no 120 Ω between CANH and CANL; **with the device asleep the CANH–CANL voltage is ~0 V** (≈2 V means the bus is held dominant).
+
+### General
+
+- **TJA1051T/3 with S tied to VIO in any real car** — the bus cannot be disturbed by the device whatever the firmware does.
 - **Use `CAN_LISTEN_ONLY 1` in any real car.** In NORMAL mode a wrong bitrate produces error frames and can disturb the car's control units.
 - **No extra termination.** CANH–CANL on the sniffer must not be ~120 Ω.
 - **DS3231 + CR2032:** the MH board charges the battery from VCC. Remove the charging resistor (marked `201`) or use a rechargeable LIR2032. A charged CR2032 in a hot car can swell or leak.
