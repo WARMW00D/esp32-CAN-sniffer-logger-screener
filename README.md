@@ -2,7 +2,7 @@
 
 [Русская версия](README_ru.md)
 
-> ⚠️ **Read before connecting anything to the car.** On the Audi A4 B9 (MLB-Evo) the **CAN-Infotainment bus also carries the automatic transmission gear selector (E313)** — confirmed by the wiring diagram; other MLB-Evo models are likely the same, check yours. A faulty or wrongly chosen transceiver on this bus can disconnect the selector from the gearbox — including while driving. This happened during development: see [Safety](#safety). Use **only TJA1051T/3 with the S pin tied to VIO**.
+> ⚠️ **Read before connecting anything to the car.** On the Audi A4 B9 (MLB-Evo) the **CAN-Infotainment bus also carries the automatic transmission gear selector (E313)** — confirmed by the wiring diagram; other MLB-Evo models are likely the same, check yours. An extra terminator on a transceiver module, or a faulty transceiver, on this bus can disconnect the selector from the gearbox — including while driving. This happened during development: see [Safety](#safety). Recommended: **TJA1051T/3 with the S pin tied to VIO**; SN65HVD230 — at your own risk. Whatever the chip, check the module itself (see Safety).
 
 A pair of independent devices for reverse-engineering a car's CAN bus:
 
@@ -81,7 +81,7 @@ Common parts:
 
 | Part | Notes |
 |---|---|
-| CAN transceiver | **TJA1051T/3 only** (e.g. a CJMCU-1051 board with a genuine chip): VCC 5 V, VIO 3.3 V, **S tied to VIO** — hardware silent mode |
+| CAN transceiver | **TJA1051T/3 recommended** (e.g. a CJMCU-1051 board with a genuine chip): VCC 5 V, VIO 3.3 V, **S tied to VIO** — hardware silent mode. SN65HVD230 works, but at your own risk (see Safety) |
 | RTC (optional) | DS3231 or PCF8563, detected automatically. Without it, time comes from the CAN bus (see *Time*). DS3231 MH board: **charging circuit must be removed** when using a CR2032 |
 | Unneeded LEDs | **Remove them** on all boards and modules (power indicators on the SD, RTC, transceiver and DC-DC modules and on the ESP32 boards): they stay lit all the time, including in sleep, and make up most of the parking current. The status LED (WS2812) is controlled by the firmware and switched off before sleep |
 | Optocoupler (PC817 or similar) | ACC (ignition) detection, 1.2–1.5 kΩ series resistor on the 12 V side |
@@ -101,7 +101,7 @@ On the WROOM CAM board GPIO4–18 are routed to the camera connector, so the sni
 
 > **TX goes to TX, RX to RX.** Unlike UART, the lines are *not* crossed: the names on both the ESP32 and the transceiver refer to the same direction (towards / from the bus).
 
-**Transceiver: TJA1051T/3 only.** VCC = 5 V, VIO = 3.3 V (sets the logic levels for the ESP32), **S = VIO in the car**: silent mode, the transmitter is disabled in hardware, so the transceiver can never drive the bus — not while the ESP32 boots, reboots, sleeps or crashes. Transceivers without such a pin (e.g. SN65HVD230) can hold the bus dominant while the TX pin is not driven and knock out other control units — don't use them in a car. With S = VIO keep `CAN_LISTEN_ONLY 1`: in NORMAL mode the controller would miss its own ACKs and go into error states. Bench with a single other node: S = GND and `CAN_LISTEN_ONLY 0`. Before connecting to the ESP32, check that CRX idles at ~3.3 V, not 5 V.
+**Transceiver: TJA1051T/3 recommended.** VCC = 5 V, VIO = 3.3 V (sets the logic levels for the ESP32), **S = VIO in the car**: silent mode, the transmitter is disabled in hardware, so the transceiver can never drive the bus — not while the ESP32 boots, reboots, sleeps or crashes. Transceivers without such a pin (e.g. SN65HVD230) work, but while the TX pin is not driven they may hold the bus dominant — use them at your own risk. With S = VIO keep `CAN_LISTEN_ONLY 1`: in NORMAL mode the controller would miss its own ACKs and go into error states. Bench with a single other node: S = GND and `CAN_LISTEN_ONLY 0`. Before connecting to the ESP32, check that CRX idles at ~3.3 V, not 5 V.
 
 **Termination:** the car's bus is already terminated. CANH–CANL on the sniffer must measure tens of kΩ (transceiver input). If you see ~120 Ω, remove the resistor on the transceiver board.
 
@@ -344,16 +344,18 @@ During development the sniffer used an SN65HVD230 transceiver and was connected 
 - gearbox (02): **U010300 — gear shift control module, no communication**, recorded at 76 km/h;
 - gateway (19), earlier: *CAN Infotainment no communication* together with BAP timeouts.
 
-The fault appeared **both while the sniffer was running (in `LISTEN_ONLY`) and with the ignition off, while the ESP32 was in deep sleep**, and went away once the sniffer was removed. Since a listen-only controller never transmits, the cause had to be the transceiver itself — and the bench confirmed it: **the same module measured 36 kΩ between CANH and CANL (unpowered) before installation and 118 Ω after** — the chip had broken down internally. On the bus it acted as a third terminator (≈40 Ω instead of the nominal 60 Ω), lowering the differential signal until the most sensitive node — the selector — started losing messages, regardless of whether the ESP32 was running or asleep. The SN65HVD230 bus pins are rated only for −4…+16 V, and these cheap modules often carry questionable chips; a transient or a slip while splicing into live wires is enough. On top of that, the SN65HVD230 has no silent pin and no dominant time-out: whenever the ESP32 does not drive the TX pin (deep sleep, boot, reset), its input floats and it may hold the bus dominant. `CAN_LISTEN_ONLY` cannot protect against either — it only controls the CAN controller, not a broken or undriven transceiver. A loosely twisted splice on the bus wires may have contributed.
+The fault appeared **both while the sniffer was running (in `LISTEN_ONLY`) and with the ignition off, while the ESP32 was in deep sleep**, and went away once the sniffer was removed. Since a listen-only controller never transmits, the cause had to be on the transceiver module — and the bench found it: **the module carried its own 120 Ω terminator (SMD resistor marked `121`) that was badly soldered.** Before installation CANH–CANL measured 36 kΩ (the resistor had no contact), later 118 Ω (vibration and heat in the car closed the cold joint). With the resistor removed — 36 kΩ again. On the bus it acted as a **third terminator** (≈40 Ω instead of the nominal 60 Ω), lowering the differential signal until the most sensitive node — the selector — started losing messages, regardless of whether the ESP32 was running or asleep. The chip itself turned out to be fine. On top of that, the SN65HVD230 has no silent pin and no dominant time-out: whenever the ESP32 does not drive the TX pin (deep sleep, boot, reset), its input floats and it may hold the bus dominant. `CAN_LISTEN_ONLY` protects against neither an extra terminator nor an undriven transmitter — it only controls the CAN controller. A loosely twisted splice on the bus wires may have contributed.
 
 **Rules that follow from this:**
 
-- **Only TJA1051T/3 with S tied to VIO.** In silent mode the transmitter is disabled in hardware, the TXD input is pulled up internally, and there is a dominant time-out — the device cannot disturb the bus whatever the firmware or the ESP32 is doing. This applies to the sniffers, the gateway and the HUD.
-- **Never use SN65HVD230 or other transceivers without a silent pin on a car bus.**
+- **TJA1051T/3 with S tied to VIO is recommended.** In silent mode the transmitter is disabled in hardware, the TXD input is pulled up internally, and there is a dominant time-out — the device cannot disturb the bus whatever the firmware or the ESP32 is doing. This applies to the sniffers, the gateway and the HUD.
+- **SN65HVD230 and other transceivers without a silent pin — at your own risk.** In this incident the SN65HVD230 chip itself was fine; the problem was the module. They have no hardware protection against an undriven TX pin, though.
+- **A low-quality board can come with any chip.** Whatever transceiver you use, inspect the module: solder joints, an on-board terminator, the chip's origin — and rework or replace it before it goes into the car.
 - **Why TJA1051T/3 is much more robust:** its CANH/CANL pins withstand ±58 V (vs −4…+16 V for the SN65HVD230).
 - **Splice into the CAN wires with the ignition off**, and connect the device's GND to the car ground near the tap.
 - **Use genuine chips.** Silent mode protects against firmware and ESP32 problems, but not against a damaged transceiver. Boards with unknown chips: replace the chip with a genuine one from a reliable distributor.
-- **Measure CANH–CANL on the unpowered device before installing and whenever something looks wrong:** tens of kΩ is normal; ~120 Ω or less means a terminator on the board or a damaged chip — do not connect it to the car.
+- **Physically remove the terminator from every transceiver module** — find the resistor marked `121` (often R2) between CANH and CANL and desolder it. **Don't rely on a measurement alone:** a badly soldered resistor can read as open on the bench and start conducting later in the car.
+- **Measure CANH–CANL on the unpowered device before installing and whenever something looks wrong:** tens of kΩ is normal; ~120 Ω means a terminator, less — a damaged chip; do not connect it to the car.
 - **Check the transceiver on the bench before installing**, unpowered and powered, both with the device running and asleep: CANH–GND and CANL–GND must not be low-resistance; CANH–CANL voltage with no other nodes is ~0 V.
 - **Solder and heat-shrink the splices** into the CAN wires; twisted joints loosen with vibration.
 - **After installing, clear the DTCs, drive for a few days and read them again** in all control units (gateway 19, gearbox 02, selector 81, dashboard 17). If anything related to CAN-Infotainment or the selector appears — disconnect the device from the bus immediately.
@@ -361,7 +363,7 @@ The fault appeared **both while the sniffer was running (in `LISTEN_ONLY`) and w
 
 ### General
 
-- **TJA1051T/3 with S tied to VIO in any real car** — the bus cannot be disturbed by the device whatever the firmware does.
+- **TJA1051T/3 with S tied to VIO is recommended in any real car** — the bus cannot be disturbed by the device whatever the firmware does.
 - **Use `CAN_LISTEN_ONLY 1` in any real car.** In NORMAL mode a wrong bitrate produces error frames and can disturb the car's control units.
 - **No extra termination.** CANH–CANL on the sniffer must not be ~120 Ω.
 - **DS3231 + CR2032:** the MH board charges the battery from VCC. Remove the charging resistor (marked `201`) or use a rechargeable LIR2032. A charged CR2032 in a hot car can swell or leak.
