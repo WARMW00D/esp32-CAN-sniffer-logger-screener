@@ -81,7 +81,7 @@ Common parts:
 
 | Part | Notes |
 |---|---|
-| CAN transceiver | **TJA1051T/3 recommended** (e.g. a CJMCU-1051 board with a genuine chip): VCC 5 V, VIO 3.3 V, **S tied to VIO** — hardware silent mode. SN65HVD230 works, but at your own risk (see Safety) |
+| CAN transceiver | **TJA1051T/3 recommended** (e.g. a CJMCU-1051 board with a genuine chip): VCC 5 V, VIO 3.3 V, **S tied to VIO** — hardware silent mode. SN65HVD230 works, but at your own risk (see Safety); **it is a 3.3 V part: VCC from 3.3 V, never 5 V** |
 | RTC (optional) | DS3231 or PCF8563, detected automatically. Without it, time comes from the CAN bus (see *Time*). DS3231 MH board: **charging circuit must be removed** when using a CR2032 |
 | Unneeded LEDs | **Remove them** on all boards and modules (power indicators on the SD, RTC, transceiver and DC-DC modules and on the ESP32 boards): they stay lit all the time, including in sleep, and make up most of the parking current. The status LED (WS2812) is controlled by the firmware and switched off before sleep |
 | Optocoupler (PC817 or similar) | ACC (ignition) detection, 1.2–1.5 kΩ series resistor on the 12 V side |
@@ -101,7 +101,11 @@ On the WROOM CAM board GPIO4–18 are routed to the camera connector, so the sni
 
 > **TX goes to TX, RX to RX.** Unlike UART, the lines are *not* crossed: the names on both the ESP32 and the transceiver refer to the same direction (towards / from the bus).
 
-**Transceiver: TJA1051T/3 recommended.** VCC = 5 V, VIO = 3.3 V (sets the logic levels for the ESP32), **S = VIO in the car**: silent mode, the transmitter is disabled in hardware, so the transceiver can never drive the bus — not while the ESP32 boots, reboots, sleeps or crashes. Transceivers without such a pin (e.g. SN65HVD230) work, but while the TX pin is not driven they may hold the bus dominant — use them at your own risk. With S = VIO keep `CAN_LISTEN_ONLY 1`: in NORMAL mode the controller would miss its own ACKs and go into error states. Bench with a single other node: S = GND and `CAN_LISTEN_ONLY 0`. Before connecting to the ESP32, check that CRX idles at ~3.3 V, not 5 V.
+**Transceiver: TJA1051T/3 recommended.** VCC = 5 V, VIO = 3.3 V (sets the logic levels for the ESP32), **S = VIO in the car**: silent mode, the transmitter is disabled in hardware, so the transceiver can never drive the bus — not while the ESP32 boots, reboots, sleeps or crashes. Transceivers without such a pin (e.g. SN65HVD230) work, but while the TX pin is not driven they may hold the bus dominant — use them at your own risk. With S = VIO keep `CAN_LISTEN_ONLY 1`: in NORMAL mode the controller would miss its own ACKs and go into error states. Bench with a single other node: S = GND and `CAN_LISTEN_ONLY 0`.
+
+**If you use SN65HVD230 (at your own risk), the power is different:** it is a **3.3 V chip — VCC to the 3.3 V rail (3V3p), never to 5 V** (5 V damages it). It has no VIO and no S pin; Rs → GND (high-speed mode). CTX/CRX are connected the same way (D = CTX, R = CRX). The schematics show the TJA1051T/3 connection; for SN65HVD230 simply leave the 5V wire unconnected and feed VCC from 3V3p.
+
+Before connecting to the ESP32, check that CRX idles at ~3.3 V, not 5 V.
 
 **Termination:** the car's bus is already terminated. CANH–CANL on the sniffer must measure tens of kΩ (transceiver input). If you see ~120 Ω, remove the resistor on the transceiver board.
 
