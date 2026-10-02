@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="950" viewBox="0 0 1240 950">
-<rect x="0" y="0" width="1240" height="950" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="975" viewBox="0 0 1240 975">
+<rect x="0" y="0" width="1240" height="975" fill="#ffffff"/>
 <text x="24" y="38" font-family="Segoe UI, Arial, sans-serif" font-size="22" fill="#222" text-anchor="start" font-weight="bold">CAN → BLE gateway for the HUD — ESP32-S3 Super Mini</text>
 <text x="24" y="62" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#555" text-anchor="start" font-weight="normal">esp32s3_can_ble_gateway · powered from ACC · no SD, no RTC — CAN reception and BLE stream to the HUD</text>
 <rect x="30" y="110" width="190" height="330" rx="8" fill="#eceff1" stroke="#37474f" stroke-width="1.6"/>
@@ -174,14 +174,15 @@
 <text x="904" y="214" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">CAN bus</text>
 <line x1="870" y1="230" x2="896" y2="230" stroke="#1565c0" stroke-width="3"/>
 <text x="904" y="234" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#222" text-anchor="start" font-weight="normal">BLE (wireless)</text>
-<rect x="560" y="745" width="650" height="178" rx="8" fill="#fffde7" stroke="#f9a825" stroke-width="1.3"/>
+<rect x="560" y="745" width="650" height="196" rx="8" fill="#fffde7" stroke="#f9a825" stroke-width="1.3"/>
 <text x="574" y="767" font-family="Segoe UI, Arial, sans-serif" font-size="13.5" fill="#222" text-anchor="start" font-weight="bold">Notes</text>
 <text x="574" y="787" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">All GND are common (car GND = board GND).</text>
 <text x="574" y="805" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Same-name flags (5V, 3V3p, GND) are connected; 3V3p = Super Mini 3V3 pin.</text>
 <text x="574" y="823" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">TJA1051T/3 recommended: S = VIO — transmitter disabled in hardware (SN65HVD230 at own risk).</text>
 <text x="574" y="841" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Bench with a single other node: S = GND and CAN_LISTEN_ONLY 0 (ACK needed).</text>
-<text x="574" y="859" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Powered from the ignition line only: no sleep, no ACC sensing, zero parking current.</text>
-<text x="574" y="877" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">No Wi-Fi, no SD: the Super Mini LDO easily powers the ESP32 (VIO takes microamps).</text>
-<text x="574" y="895" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">CAN_LISTEN_ONLY 1 in the car.</text>
-<text x="574" y="913" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Firmware: esp32s3_can_ble_gateway. Time for the camera comes from CAN 0x6B2.</text>
+<text x="574" y="859" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">SN65HVD230 instead (own risk): VCC = 3.3 V (3V3p), NOT 5 V; Rs → GND; no VIO/S pins.</text>
+<text x="574" y="877" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Powered from the ignition line only: no sleep, no ACC sensing, zero parking current.</text>
+<text x="574" y="895" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">No Wi-Fi, no SD: the Super Mini LDO easily powers the ESP32 (VIO takes microamps).</text>
+<text x="574" y="913" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">CAN_LISTEN_ONLY 1 in the car.</text>
+<text x="574" y="931" font-family="Segoe UI, Arial, sans-serif" font-size="12.2" fill="#222" text-anchor="start" font-weight="normal">Firmware: esp32s3_can_ble_gateway. Time for the camera comes from CAN 0x6B2.</text>
 </svg>
