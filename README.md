@@ -2,7 +2,7 @@
 
 [Русская версия](README_ru.md)
 
-> ⚠️ **Read before connecting anything to the car.** On the Audi A4 B9 (MLB-Evo) the **CAN-Infotainment bus also carries the automatic transmission gear selector (E313)** — confirmed by the wiring diagram; other MLB-Evo models are likely the same, check yours. An extra terminator on a transceiver module, or a faulty transceiver, on this bus can disconnect the selector from the gearbox — including while driving. This happened during development: see [Safety](#safety). Recommended: **TJA1051T/3 with the S pin tied to VIO**; SN65HVD230 — at your own risk. Whatever the chip, check the module itself (see Safety).
+> ⚠️ **Read before connecting anything to the car.** On the Audi A4 B9 (MLB-Evo) the **CAN-Infotainment bus also carries the automatic transmission gear selector (E313)** — confirmed by the wiring diagram; other MLB-Evo models are likely the same, check yours. During development a faulty transceiver (SN65HVD230) on this bus disconnected the selector from the gearbox — including while driving: see [Safety](#safety). Recommended: **TJA1051T/3 with the S pin tied to VIO**; SN65HVD230 — at your own risk. Whatever the chip, check the module itself (see Safety).
 
 A pair of independent devices for reverse-engineering a car's CAN bus:
 
@@ -348,12 +348,21 @@ During development the sniffer used an SN65HVD230 transceiver and was connected 
 - gearbox (02): **U010300 — gear shift control module, no communication**, recorded at 76 km/h;
 - gateway (19), earlier: *CAN Infotainment no communication* together with BAP timeouts.
 
-The fault appeared **both while the sniffer was running (in `LISTEN_ONLY`) and with the ignition off, while the ESP32 was in deep sleep**, and went away once the sniffer was removed. Since a listen-only controller never transmits, the cause had to be on the transceiver module — and the bench found it: **the module carried its own 120 Ω terminator (SMD resistor marked `121`) that was badly soldered.** Before installation CANH–CANL measured 36 kΩ (the resistor had no contact), later 118 Ω (vibration and heat in the car closed the cold joint). With the resistor removed — 36 kΩ again. On the bus it acted as a **third terminator** (≈40 Ω instead of the nominal 60 Ω), lowering the differential signal until the most sensitive node — the selector — started losing messages, regardless of whether the ESP32 was running or asleep. The chip itself turned out to be fine. On top of that, the SN65HVD230 has no silent pin and no dominant time-out: whenever the ESP32 does not drive the TX pin (deep sleep, boot, reset), its input floats and it may hold the bus dominant. `CAN_LISTEN_ONLY` protects against neither an extra terminator nor an undriven transmitter — it only controls the CAN controller. A loosely twisted splice on the bus wires may have contributed.
+The fault appeared **both while the sniffer was running (in `LISTEN_ONLY`) and with the ignition off, while the ESP32 was in deep sleep**, and went away when the sniffer was removed. A listen-only controller never transmits, so the cause is on the transceiver side or in the tap itself.
+
+**Resolution.** The same tap, the same ESP32 board and the same firmware were kept; **only the transceiver module was replaced** — the SN65HVD230 board by a TJA1051T/3 board — and the selector has worked normally since. So the fault was in the SN65HVD230 module itself, not in the tap, the wiring or the firmware. What was found on that module:
+
+- an on-board 120 Ω terminator (SMD resistor marked `121`) that was badly soldered: 36 kΩ between CANH and CANL on the bench, 118 Ω later in the car, i.e. a third terminator on the bus (≈40 Ω instead of 60 Ω). It was removed, **but the selector still faulted afterwards**, so the module had at least one more fault;
+- the remaining fault is most likely **the SN65HVD230 chip itself**: on this module the CANH and CANL lines go from the chip pins straight to the connector with no components in between (the terminator was the only part on them, and it was removed), and replacing the module cured the problem. The chip was not tested out of circuit.
+
+The lesson: a device that only listens can still take a bus down through a faulty transceiver chip, and on this bus that includes the gear selector.
+
+**Whenever you install any device on the bus:** connect it only while parked, clear and re-read the DTCs after each change, and disconnect it at the first selector or gearbox error.
 
 **Rules that follow from this:**
 
 - **TJA1051T/3 with S tied to VIO is recommended.** In silent mode the transmitter is disabled in hardware, the TXD input is pulled up internally, and there is a dominant time-out — the device cannot disturb the bus whatever the firmware or the ESP32 is doing. This applies to the sniffers, the gateway and the HUD.
-- **SN65HVD230 and other transceivers without a silent pin — at your own risk.** In this incident the SN65HVD230 chip itself was fine; the problem was the module. They have no hardware protection against an undriven TX pin, though.
+- **SN65HVD230 and other transceivers without a silent pin — at your own risk.** In this incident the SN65HVD230 chip itself most likely failed (on that module the bus lines had no external components except a badly soldered terminator). They have no hardware protection against an undriven TX pin.
 - **A low-quality board can come with any chip.** Whatever transceiver you use, inspect the module: solder joints, an on-board terminator, the chip's origin — and rework or replace it before it goes into the car.
 - **Why TJA1051T/3 is much more robust:** its CANH/CANL pins withstand ±58 V (vs −4…+16 V for the SN65HVD230).
 - **Splice into the CAN wires with the ignition off**, and connect the device's GND to the car ground near the tap.
