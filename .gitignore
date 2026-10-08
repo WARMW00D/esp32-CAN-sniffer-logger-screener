@@ -1,0 +1,12 @@
+# Секреты (копия secrets.example.h с реальными значениями) — в репозиторий не попадают
+secrets.h
+**/secrets.h
+
+# Сборка и мусор
+build/
+*.bin
+*.elf
+*.zip
+.vscode/
+.DS_Store
+Thumbs.db
