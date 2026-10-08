@@ -29,6 +29,9 @@ esp32s3_can_ble_gateway/
 esp32s3_wroom_can_ble_replay/
     esp32s3_wroom_can_ble_replay.ino            — bench replay of logs to the HUD over BLE (ESP32-S3-WROOM-1 CAM)
     src/lzma/                                   — LZMA decoder (LZMA SDK, public domain)
+esp32cam_aithinker_can_ble_replay/
+    esp32cam_aithinker_can_ble_replay.ino       — the same bench replay on a spare AI-Thinker ESP32-CAM (on-board microSD, no camera)
+    src/lzma/                                   — LZMA decoder (LZMA SDK, public domain)
 esp32cam_aithinker_video_ble_sync_client/
     esp32cam_aithinker_video_ble_sync_client.ino — camera, recording mode
 esp32cam_aithinker_aiming_stream/
@@ -46,7 +49,10 @@ tools/
     log_unpack.py                                — unpack .txt.lzma / .txt.gz logs (also truncated ones), join a folder
 README.md
 README_ru.md
+.gitignore                                       — keeps secrets.h and fonts/ out of git
 ```
+
+Every sniffer, gateway and replay folder also contains `secrets.example.h` (a template of the secrets; see *Secrets* below).
 
 ---
 
@@ -123,11 +129,19 @@ Choosing the wrong PSRAM type gives `PSRAM chip is not connected`. Both partitio
 
 Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is part of the core. The LZMA encoder is shipped with the sketch in `src/lzma/` and compiled automatically — nothing to install.
 
+### Secrets
+
+Passwords and the BLE access code live in `secrets.h` next to the sketch, **not** in the main file — so they never get published. The repository holds only the template `secrets.example.h`; `secrets.h` is in `.gitignore`.
+
+1. Copy `secrets.example.h` to `secrets.h` (the archive already contains one with placeholder values).
+2. Set your own values: `BLE_PASSKEY` (six digits, no leading zeros), `AP_PASSWORD`, `OTA_PASSWORD`, `OTA_WEB_USER` (the gateway and the replay board only need `BLE_PASSKEY`).
+3. The sketch stops with a clear `#error` if `secrets.h` is missing.
+
 ### Build options (`#define` at the top of the sketch)
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.7.1"` (WROOM) / `"2.7.1"` (Super Mini) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.8.2"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -142,10 +156,13 @@ Libraries: **RTClib** (Adafruit), **NimBLE-Arduino 2.x**. Everything else is par
 | `LOG_GZ_SYNC_MS` | `1000` | gzip only — compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
 | `WIFI_ACTIVE_MINUTES` | `5` | Wi-Fi access point, portal and espota OTA run for this many minutes after the ignition is switched on, then Wi-Fi is turned off until the next ignition-on (less heat and current). Not switched off while the portal is being used. 0 = always on |
+| `LOG_PAUSE_WHILE_PORTAL` / `LOG_PORTAL_HOLD_MS` | `1` / `60 s` | While the portal is in use (a client on the access point and requests within the last `LOG_PORTAL_HOLD_MS`), logging to the SD card is paused: the file is closed (marker `PAUSE (portal)`), frames are not saved, and logging continues in a new file (`CONTINUED`) when the portal is idle. 0 = keep logging |
 | `AP_CHANNEL` | `0` | 0 = pick the quietest of channels 1 / 6 / 11 at start-up (2–3 s scan; neighbour networks weighted by signal power in mW and by channel overlap, so one network at −45 dBm counts more than many at −75 dBm); 1–13 = fixed channel. The chosen channel and per-channel interference are shown in Serial and on the portal home page |
 | `WIFI_TX_POWER` | `WIFI_POWER_13dBm` (WROOM) / `WIFI_POWER_8_5dBm` (Super Mini) | Wi-Fi transmit power: lower means smaller current spikes, at the cost of range and portal speed |
-| `AP_SSID` / `AP_PASSWORD` | `S3-CAN-Sniffer-Setup` / `canlogger123` | Portal access point |
-| `OTA_PASSWORD` / `OTA_WEB_USER` | `changeme123` / `admin` | **Change before use.** Shared by `/update` and espota |
+| `AP_SSID` | `S3-CAN-Sniffer-Setup` | Portal access point name |
+| `AP_PASSWORD` *(secrets.h)* | `canlogger123` | Portal access point password |
+| `OTA_PASSWORD` / `OTA_WEB_USER` *(secrets.h)* | `changeme123` / `admin` | **Change before use.** Shared by `/update` and espota |
+| `BLE_PASSKEY` *(secrets.h)* | `0` | BLE access code: six digits, no leading zeros; **0 = BLE protection off** (open access). See *BLE protection* |
 | `USB_HOST_KEEPS_AWAKE` | `1` | Don't sleep while a USB host (PC) is connected. Set to 0 if the sniffer is powered from a car head unit's USB port |
 | `USB_LOST_GRACE_MS` | `5000` | How long the USB host must be gone before sleeping |
 | `WEB_HOLD_MS` | `300000` | Portal activity keeps the sniffer awake this long after the last request |
@@ -254,13 +271,23 @@ Device name `S3-CAN-Sniffer`, service `A1B2C3D4-0001-41A2-9E3B-000000000001`:
 
 The HUD sends its filter list after each connection and decodes the frames itself. Protocol: [docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md).
 
+#### BLE protection
+
+Enabled by a non-zero `BLE_PASSKEY` in `secrets.h` (sniffers, gateway, replay board). Details for client developers: [docs/BLE_pairing_protocol_ru.md](docs/BLE_pairing_protocol_ru.md).
+
+- Pairing with a six-digit code (LE Secure Connections, MITM, bonding). The device "shows" the code, the client "types" it — in firmware, no human involved; the same constant goes into the device and into the client.
+- **One paired client per device.** Once a client is paired, new pairings are refused and a second connection is dropped. Reset: **hold BOOT for 5 s on the running device** — violet blinking while counting, white blinking when done (don't hold BOOT while powering on: the board would enter the bootloader).
+- A connection that has not paired within 15 s is dropped; 5 failed attempts in a row block pairing for 60 s. Subscriptions and ACL writes are accepted only over the encrypted link.
+- A six-digit code protects against random connections and the curious, not against a determined attacker. With `BLE_PASSKEY 0` access is open, as in earlier versions.
+- The camera sketches are not updated yet: they work with a device only while its `BLE_PASSKEY` is 0.
+
 Also the standard Device Information Service (`0x180A`) with firmware version and build date.
 
 ---
 
 ## CAN → BLE gateway for the HUD — `esp32s3_can_ble_gateway`
 
-A stripped-down sniffer for permanent installation with the HUD: an ESP32-S3 Super Mini and a CAN transceiver, powered from the ignition line (ACC) — no SD card, no RTC, no Wi-Fi, no sleep logic and no parking current. It only receives the bus and streams the frames that pass the HUD's ACL over BLE. For the HUD it is identical to the sniffer: same BLE name (`S3-CAN-Sniffer`), UUIDs and protocol ([docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md)). The time-sync characteristic `…0002` is kept for the camera; its date/time comes from CAN frame 0x6B2. LED: blue — waiting for the HUD, green (+ white while frames are sent) — streaming, red — CAN failed to start. Options: `CAN_BITRATE`, `CAN_LISTEN_ONLY`. Transceiver: TJA1051T/3 with S = VIO, as for the sniffer. Wiring: [docs/gateway_supermini.svg](docs/gateway_supermini.svg). Flashing — over USB (there is no Wi-Fi/OTA).
+A stripped-down sniffer for permanent installation with the HUD: an ESP32-S3 Super Mini and a CAN transceiver, powered from the ignition line (ACC) — no SD card, no RTC, no Wi-Fi, no sleep logic and no parking current. It only receives the bus and streams the frames that pass the HUD's ACL over BLE. For the HUD it is identical to the sniffer: same BLE name (`S3-CAN-Sniffer`), UUIDs and protocol ([docs/BLE_ACL_protocol_ru.md](docs/BLE_ACL_protocol_ru.md)). The time-sync characteristic `…0002` is kept for the camera; its date/time comes from CAN frame 0x6B2. LED: blue — waiting for the HUD, green (+ white while frames are sent) — streaming, red — CAN failed to start. Options: `CAN_BITRATE`, `CAN_LISTEN_ONLY`. Transceiver: TJA1051T/3 with S = VIO, as for the sniffer. Wiring: [docs/gateway_supermini.svg](docs/gateway_supermini.svg). Flashing — over USB (there is no Wi-Fi/OTA). BLE protection works as for the sniffer (`BLE_PASSKEY` in `secrets.h`, one paired client, BOOT held 5 s resets the pairings).
 
 ## Bench replay for the HUD — `esp32s3_wroom_can_ble_replay`
 
@@ -270,11 +297,22 @@ A stand-in for the sniffer on the desk: an ESP32-S3-WROOM-1 CAM board with the s
 2. Power the board and connect the HUD.
 3. When the HUD subscribes to `…0008` and writes its ACL to `…0007`, playback starts: frames that pass the filter are sent with the same timing as in the car. A new ACL (or reconnect) restarts from the beginning.
 
-Session boundaries (`BOOT` markers) insert a 1 s pause; continuation files play without a gap. Options: `REPLAY_LOOP`, `REPLAY_SPEED`, `REPLAY_SESSION_GAP_MS`. LED: blue — waiting for the HUD, green (+ white while frames are sent) — playing, red — no SD card or no files. `.gz` logs are skipped — unpack them with `tools/log_unpack.py` first. Don't power the replay board and the real sniffer at the same time: they advertise the same name.
+Session boundaries (`BOOT` markers) insert a 1 s pause; continuation files play without a gap. Options: `REPLAY_LOOP`, `REPLAY_SPEED`, `REPLAY_SESSION_GAP_MS`. LED: blue — waiting for the HUD, green (+ white while frames are sent) — playing, red — no SD card or no files. `.gz` logs are skipped — unpack them with `tools/log_unpack.py` first. Don't power the replay board and the real sniffer at the same time: they advertise the same name. BLE protection works as for the sniffer; the HUD pairs with the replay board and with the gateway as two different devices.
 
 Arduino IDE: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM". Library: NimBLE-Arduino 2.x.
 
 ---
+
+### Replay on an AI-Thinker ESP32-CAM — `esp32cam_aithinker_can_ble_replay`
+
+The same player for a board that no longer records the cluster. Behaviour, BLE name, protocol, options and pairing are identical; differences:
+
+- Board "AI Thinker ESP32-CAM", **PSRAM: Disabled**; the camera is not used. The on-board microSD slot works as is (SD_MMC, 1-bit); the bright flash LED (GPIO4) is left unused because it shares the pin with the card.
+- Power 5 V; no CAN transceiver and nothing to wire.
+- One red LED (GPIO33), status by flashes per second: 1 — waiting for the HUD, 2 — playing, 3 — playing and frames are sent over BLE, fast blinking — no SD card or no files.
+- Pairing reset: a button between **IO0** and GND (the IO0 button of the ESP32-CAM-MB programmer), held 5 s.
+- Flashing: through ESP32-CAM-MB or a USB-UART adapter (IO0 to GND while powering on, then release).
+- `secrets.h` needs only `BLE_PASSKEY`, as for the S3 replay.
 
 ## 2. Cluster camera (AI-Thinker ESP32-CAM)
 
@@ -383,7 +421,7 @@ The lesson: a device that only listens can still take a bus down through a fault
 - **Power:** don't feed the sniffer from the head unit's USB port (it acts as a USB host and keeps the sniffer awake). Use a DC-DC with low quiescent current, a fuse and a TVS diode on the input.
 - **Unneeded LEDs:** remove the power LEDs on all modules and boards — they are the main source of parking current. On the camera they can also reflect in the cluster glass and spoil the frames.
 - **Antenna:** the Super Mini has a chip antenna on the board; keep it away from metal, or the portal and BLE range drop sharply.
-- **Change the passwords** (`AP_PASSWORD`, `OTA_PASSWORD`) before installing.
+- **Set your own secrets** (`BLE_PASSKEY`, `AP_PASSWORD`, `OTA_PASSWORD`) in `secrets.h` before installing, and never publish `secrets.h`.
 
 ---
 
