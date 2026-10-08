@@ -102,7 +102,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.8.2"
+#define FW_VERSION   "2.9.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -137,6 +137,10 @@
 // Файловая система логов: SD_MMC на WROOM CAM, SD (SPI) на Super Mini.
 // Весь код ниже работает через LOGFS — API у обеих одинаковый.
 #define LOGFS SD_MMC
+#define SDMMC_LOG_KHZ    10000   // частота SD_MMC при записи лога, кГц
+#define SDMMC_PORTAL_KHZ 20000   // пока работает портал (запись остановлена)
+#define SD_FREQ_LOG    SDMMC_LOG_KHZ
+#define SD_FREQ_PORTAL SDMMC_PORTAL_KHZ
 
 // ---------- Время ----------
 // Источники времени (по убыванию приоритета при старте):
@@ -199,6 +203,8 @@
 // Флаги состояния для индикации
 volatile bool sdMounted  = false;   // SD смонтирована
 volatile bool canRunning = true;    // приём CAN запущен
+volatile bool sdPortalMode = false;  // запись остановлена, SD на скорости портала
+volatile uint8_t webSdActive = 0;    // сколько обработчиков портала сейчас работают с SD
 volatile bool sdBusy     = false;   // идёт форматирование — sdTask к карте не лезет
 volatile bool ledStopped = false;   // светодиод выключен перед сном/перезагрузкой
 volatile uint32_t lastCanFrameMs = 0;   // время последнего принятого кадра CAN
@@ -1173,6 +1179,7 @@ bool webPortalActive() {
 // Портал держит карту: есть клиент на точке доступа и запросы за последнее время
 bool logPortalPause() {
 #if LOG_PAUSE_WHILE_PORTAL
+  if (webSdActive) return true;                 // идёт обработчик (скачивание может быть долгим)
   if (!webActivitySeen) return false;
   if (WiFi.softAPgetStationNum() == 0) return false;
   return (millis() - lastWebActivityMs) < LOG_PORTAL_HOLD_MS;
@@ -1180,6 +1187,26 @@ bool logPortalPause() {
   return false;
 #endif
 }
+
+// Обработчик, работающий с SD: на время его работы запись лога остановлена, а карта
+// переведена на скорость портала. sdTask делает это сам (закрывает файл, перемонтирует);
+// обработчик ждёт до 3 с, чтобы не читать карту посреди перемонтирования.
+struct PortalSdGuard {
+  PortalSdGuard() {
+    touchWeb();
+#if LOG_PAUSE_WHILE_PORTAL
+    webSdActive++;
+    uint32_t t0 = millis();
+    while (!sdPortalMode && millis() - t0 < 3000) delay(20);
+#endif
+  }
+  ~PortalSdGuard() {
+#if LOG_PAUSE_WHILE_PORTAL
+    if (webSdActive) webSdActive--;
+#endif
+    touchWeb();
+  }
+};
 
 String canBitrateFormHtml() {
   String h = "<h2>" + TR("Скорость CAN-шины", "CAN bus bitrate") + "</h2>"
@@ -1253,7 +1280,7 @@ void handleCanBitrate() {
 }
 
 void handleRoot() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   DateTime now = nowTime();
   char nowStr[32];
   snprintf(nowStr, sizeof(nowStr), "%04d-%02d-%02dT%02d:%02d:%02d",
@@ -1391,7 +1418,7 @@ bool removeTree(const String& path, uint32_t& filesDeleted) {
 
 // POST /delete: удалить выбранные папки целиком
 void handleDelete() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   String active = getActiveLogFolder();
   String report;
   uint32_t totalFiles = 0;
@@ -1455,7 +1482,7 @@ String htmlEscape(const String& in) {
 #define ERRLOG_VIEW_BYTES  (32 * 1024)
 #define ERRLOG_VIEW_LINES  300
 void handleErrors() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   String html = htmlHead(TR("Журнал ошибок", "Error log")) +
                 "<h2>" + TR("Журнал ошибок", "Error log") + "</h2>"
                 "<p><a href='/'>&larr; " + TR("на главную", "home") + "</a> · <a href='/logs'>" +
@@ -1516,7 +1543,7 @@ void handleErrors() {
 }
 
 void handleErrorsClear() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   if (sdMounted) {
     if (errMutex) xSemaphoreTake(errMutex, pdMS_TO_TICKS(2000));
     LOGFS.remove(ERRLOG_PATH);
@@ -1529,7 +1556,7 @@ void handleErrorsClear() {
 }
 
 void handleLogs() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   String html = htmlHead(TR("Логи CAN-сниффера", "CAN sniffer logs")) +
                  "<h2>" + TR("Логи по датам", "Logs by date") + "</h2>"
                  "<p><a href='/'>&larr; " + TR("на главную", "home") + "</a></p>"
@@ -1719,7 +1746,7 @@ bool closeActiveLogForDownload() {
 }
 
 void handleDownload() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   if (!webServer.hasArg("file")) {
     webServer.send(400, "text/plain; charset=utf-8", TR("Не указан параметр file", "Missing file parameter"));
     return;
@@ -1820,7 +1847,7 @@ struct TarItem {
 };
 
 void handleDownloadTar() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   // Собираем список выбранных папок из повторяющихся параметров folder=...
   std::vector<String> folders;
   for (int i = 0; i < webServer.args(); i++) {
@@ -2612,6 +2639,7 @@ static SemaphoreHandle_t   lzStartSem = nullptr, lzDoneSem = nullptr;
 static volatile bool       lzEof = false;       // больше данных не будет
 static volatile bool       lzFailed = false;    // кодер не смог стартовать
 static volatile uint32_t   lzOutBytes = 0;      // сжатых байт в файле
+static volatile uint32_t   lzRetries = 0;       // повторов записи, спасших файл
 static volatile uint32_t   lzShortWrites = 0;   // сколько раз SD приняла меньше, чем просили
 static volatile int        lzWriteErr = 0;      // код ошибки файла на момент сбоя записи
 static uint32_t            lzLastFlush = 0;
@@ -2636,7 +2664,13 @@ static SRes lzRead(ISeqInStreamPtr, void* buf, size_t* size) {
 
 // Выход кодера: в файл. Раз в секунду — flush (обновить размер в FAT)
 static size_t lzWrite(ISeqOutStreamPtr, const void* buf, size_t size) {
+  // Разовый сбой шины SD (помеха, просадка) переживаем повтором остатка
   size_t w = canLogFile.write((const uint8_t*)buf, size);
+  for (int t = 0; t < 3 && w < size; t++) {
+    lzRetries++;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    w += canLogFile.write((const uint8_t*)buf + w, size - w);
+  }
   if (w != size) {                    // SD не приняла данные: кодер вернёт SZ_ERROR_WRITE (9)
     lzShortWrites++;
     lzWriteErr = canLogFile.getWriteError();
@@ -2868,7 +2902,7 @@ bool sdFormatAndMount() {
 }
 
 void handleSdFormat() {
-  touchWeb();
+  PortalSdGuard portalGuard;
   // Разрушительная операция — под тем же паролем, что и прошивка
   if (!webServer.authenticate(OTA_WEB_USER, OTA_PASSWORD)) {
     return webServer.requestAuthentication(BASIC_AUTH, "CAN Sniffer OTA");
@@ -2901,7 +2935,7 @@ void handleSdFormat() {
 void setupSD() {
   // Слот на плате: SD_MMC в 1-битном режиме. 20 МГц, не заведётся — 10 МГц
   SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
-  int sdKHz = SDMMC_FREQ_DEFAULT;   // 20000 кГц
+  int sdKHz = SDMMC_LOG_KHZ;        // 10 МГц: запас по надёжности; 20000 — быстрее скачивание
   bool ok = SD_MMC.begin("/sdcard", true, false, sdKHz);
   if (!ok) {
     Serial.println("SD_MMC на 20 МГц не завелась — пробую 10 МГц");
@@ -2923,12 +2957,12 @@ void setupSD() {
 }
 
 // Перемонтировать SD после сбоя записи (вибрация, просадка питания, контакт)
-static bool sdRemount() {
+static bool sdRemount(int khz = SD_FREQ_LOG) {
   sdMounted = false;
   SD_MMC.end();
   delay(100);
   SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
-  bool ok = SD_MMC.begin("/sdcard", true, false, 10000);   // после сбоя — 10 МГц
+  bool ok = SD_MMC.begin("/sdcard", true, false, khz);
   sdMounted = ok;
   return ok;
 }
@@ -3184,6 +3218,54 @@ bool logWriteFrame(const CanLogEntry& entry) {
   return true;
 }
 
+#if LOG_PAUSE_WHILE_PORTAL
+// Портал в работе: закрыть файл, перевести SD на скорость портала, кадры не писать.
+// Освободился: вернуть SD на скорость записи, дальше лог идёт новым файлом (CONTINUED).
+// true — запись сейчас остановлена (текущий кадр не сохранять).
+static bool portalPauseStep(bool isFrame) {
+  static bool     paused = false;
+  static uint32_t skipped = 0;
+  if (logPortalPause() && !sdBusy) {
+    if (!paused) {
+      paused = true;
+      skipped = 0;
+      if (canLogFile) {
+        String prev = currentLogName;
+        char m[96];
+        int k = snprintf(m, sizeof(m), "# %lu ===== PAUSE (portal) ===== dropped=%lu\n",
+                         (unsigned long)millis(), (unsigned long)canDroppedTotal);
+        logWrite(m, k);
+        logClose();
+        logSinceFlush = 0;
+        logPendingPrev = prev;
+      }
+      setActiveLogPath("");
+      setActiveLogFolder("");
+      if (sdMounted && SD_FREQ_PORTAL != SD_FREQ_LOG) {
+        if (!sdRemount(SD_FREQ_PORTAL)) {
+          errLog("SD: на скорости портала не заработала, возвращаю скорость записи");
+          sdRemount(SD_FREQ_LOG);
+        }
+      }
+      sdPortalMode = true;
+      Serial.println("[SD task] Портал в работе — запись лога приостановлена, SD на скорости портала");
+    }
+    if (isFrame) skipped++;
+    return true;
+  }
+  if (paused) {
+    paused = false;
+    sdPortalMode = false;
+    if (SD_FREQ_PORTAL != SD_FREQ_LOG) {
+      if (!sdRemount(SD_FREQ_LOG)) logNeedRemount = true;   // дальше — обычное восстановление
+    }
+    Serial.printf("[SD task] Портал свободен — запись продолжается (пропущено кадров: %lu)\n",
+                  (unsigned long)skipped);
+  }
+  return false;
+}
+#endif
+
 void sdTask(void* param) {
   CanLogEntry entry;
 #if CAN_TIME_SYNC
@@ -3198,6 +3280,9 @@ void sdTask(void* param) {
   for (;;) {
     if (xQueueReceive(canQueue, &entry, pdMS_TO_TICKS(500)) != pdTRUE) {
       // Шина замолчала — не держать данные в буфере сжатия
+#if LOG_PAUSE_WHILE_PORTAL
+      if (portalPauseStep(false)) continue;
+#endif
       if (canLogFile) logSync();
       continue;
     }
@@ -3250,36 +3335,7 @@ void sdTask(void* param) {
     canTimeFrame(entry);   // время из CAN: выставит часы, если нужно
 
 #if LOG_PAUSE_WHILE_PORTAL
-    // Портал в работе — на SD не пишем. Файл закрыт, кадры за это время не сохраняются.
-    {
-      static bool     portalPaused = false;
-      static uint32_t pausedFrames = 0;
-      if (logPortalPause()) {
-        if (!portalPaused) {
-          portalPaused = true;
-          pausedFrames = 0;
-          if (canLogFile) {
-            String prev = currentLogName;
-            char m[96];
-            int k = snprintf(m, sizeof(m), "# %lu ===== PAUSE (portal) ===== dropped=%lu\n",
-                             (unsigned long)millis(), (unsigned long)canDroppedTotal);
-            logWrite(m, k);
-            logClose();
-            logSinceFlush = 0;
-            logPendingPrev = prev;
-            setActiveLogPath("");
-          }
-          Serial.println("[SD task] Портал в работе — запись лога приостановлена");
-        }
-        pausedFrames++;
-        continue;
-      }
-      if (portalPaused) {
-        portalPaused = false;
-        Serial.printf("[SD task] Портал свободен — запись продолжается (пропущено кадров: %lu)\n",
-                      (unsigned long)pausedFrames);
-      }
-    }
+    if (portalPauseStep(true)) continue;
 #endif
 
 #if CAN_TIME_SYNC

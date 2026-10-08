@@ -141,7 +141,7 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.8.2"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.9.0"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -157,6 +157,7 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
 | `WIFI_ACTIVE_MINUTES` | `5` | Wi-Fi access point, portal and espota OTA run for this many minutes after the ignition is switched on, then Wi-Fi is turned off until the next ignition-on (less heat and current). Not switched off while the portal is being used. 0 = always on |
 | `LOG_PAUSE_WHILE_PORTAL` / `LOG_PORTAL_HOLD_MS` | `1` / `60 s` | While the portal is in use (a client on the access point and requests within the last `LOG_PORTAL_HOLD_MS`), logging to the SD card is paused: the file is closed (marker `PAUSE (portal)`), frames are not saved, and logging continues in a new file (`CONTINUED`) when the portal is idle. 0 = keep logging |
+| `SD_SPI_FREQ_FAST` / `SD_SPI_FREQ_PORTAL` (WROOM: `SDMMC_LOG_KHZ` / `SDMMC_PORTAL_KHZ`) | `4 MHz` / `20 MHz` (WROOM: 10 / 20 MHz) | SD clock while logging and while the portal is in use. Logging needs only a few KB/s, and 20 MHz on jumper wires caused write failures; so the card runs slowly while recording and is remounted at 20 MHz when the portal pauses logging (fast downloads), then back |
 | `AP_CHANNEL` | `0` | 0 = pick the quietest of channels 1 / 6 / 11 at start-up (2–3 s scan; neighbour networks weighted by signal power in mW and by channel overlap, so one network at −45 dBm counts more than many at −75 dBm); 1–13 = fixed channel. The chosen channel and per-channel interference are shown in Serial and on the portal home page |
 | `WIFI_TX_POWER` | `WIFI_POWER_13dBm` (WROOM) / `WIFI_POWER_8_5dBm` (Super Mini) | Wi-Fi transmit power: lower means smaller current spikes, at the cost of range and portal speed |
 | `AP_SSID` | `S3-CAN-Sniffer-Setup` | Portal access point name |
