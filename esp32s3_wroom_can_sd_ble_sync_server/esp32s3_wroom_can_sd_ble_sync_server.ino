@@ -89,6 +89,10 @@
     - ВНИМАНИЕ: если в машине питать сниффер от USB магнитолы/MIB,
       магнитола выступит хостом и сниффер не уснёт никогда.
       Для такой схемы питания выставьте USB_HOST_KEEPS_AWAKE в 0.
+  Секреты: BLE_PASSKEY, AP_PASSWORD, OTA_PASSWORD, OTA_WEB_USER — в secrets.h (шаблон secrets.example.h, в репозиторий не
+  попадает). Защита BLE: код доступа, один клиент, сброс сопряжений —
+  удержание BOOT 5 с на работающем устройстве (см. docs/BLE_pairing_protocol_ru.md).
+
 */
 
 // =====================================================================
@@ -98,7 +102,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.7.1"
+#define FW_VERSION   "2.8.2"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -116,6 +120,13 @@
 #include <Update.h>
 #include <sys/time.h>
 #include <Preferences.h>
+
+#if __has_include("secrets.h")
+  #include "secrets.h"
+#else
+  #error "Нет secrets.h: скопируйте secrets.example.h в secrets.h и задайте свои значения"
+#endif
+#include "esp_random.h"
 #include "freertos/stream_buffer.h"
 // Кодер LZMA (LZMA SDK, public domain) — исходники в папке src/lzma скетча
 #include "src/lzma/LzmaEnc.h"
@@ -294,6 +305,13 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 // иначе телефон в кармане разряжал бы аккумулятор на стоянке.
 #define WEB_HOLD_MS            (5UL * 60UL * 1000UL)   // 5 минут
 
+// Пока портал в работе, запись лога на SD приостанавливается (файл закрывается
+// и целиком доступен для скачивания; карта занята только порталом). Как только
+// запросы к порталу прекращаются на LOG_PORTAL_HOLD_MS (или клиент ушёл с точки
+// доступа), запись продолжается новым файлом (маркер CONTINUED). 0 — не останавливать.
+#define LOG_PAUSE_WHILE_PORTAL 1
+#define LOG_PORTAL_HOLD_MS     (60UL * 1000UL)   // 60 с без запросов — портал свободен
+
 #if USB_HOST_KEEPS_AWAKE
   #if !ARDUINO_USB_CDC_ON_BOOT || !ARDUINO_USB_MODE
     #error "Для USB_HOST_KEEPS_AWAKE нужны: USB Mode = Hardware CDC and JTAG, USB CDC On Boot = Enabled"
@@ -302,7 +320,7 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 
 // ---------- WiFi точка доступа (веб-портал) ----------
 const char* AP_SSID     = "S3-CAN-Sniffer-Setup";
-const char* AP_PASSWORD = "canlogger123";
+// AP_PASSWORD (пароль точки доступа) — в secrets.h
 // Канал точки доступа:
 //   0    — выбрать автоматически при старте: сканирование эфира (~2–3 с) и
 //          выбор самого тихого из неперекрывающихся 1 / 6 / 11 с учётом
@@ -392,6 +410,145 @@ volatile uint16_t framesMtu = 23;
 volatile bool     bleDropFlag = false;
 volatile uint32_t bleSentTotal = 0, bleDroppedTotal = 0;
 
+// =====================================================================
+// Защита BLE: сопряжение по коду доступа (LE Secure Connections), один
+// запомненный клиент, сброс сопряжений удержанием BOOT 5 с.
+//   BLE_PASSKEY (secrets.h): шесть цифр; 0 — защита выключена, доступ
+//   открыт всем (как раньше). Протокол для клиентов (HUD, камера):
+//   docs/BLE_pairing_protocol_ru.md
+//   - устройство "показывает" код (IO capability DisplayOnly), клиент
+//     "вводит" его программно — человек не нужен;
+//   - пока клиент сопряжён (слот занят), новые сопряжения не принимаются:
+//     выдаётся случайный код. Сброс — BOOT 5 с на РАБОТАЮЩЕМ устройстве;
+//   - соединение без сопряжения отключается через BLE_AUTH_TIMEOUT_MS;
+//     5 неудач подряд — сопряжение блокируется на 60 с;
+//   - подписки и запись ACL принимаются только по зашифрованному каналу.
+// =====================================================================
+#define BLE_SECURE             (BLE_PASSKEY != 0)
+#define BLE_MAX_BONDS          1        // сколько клиентов можно запомнить
+#define BLE_AUTH_TIMEOUT_MS    15000    // за это время клиент должен пройти сопряжение
+#define BLE_MAX_AUTH_FAILS     5        // неудач подряд до блокировки
+#define BLE_LOCK_MS            60000    // длительность блокировки сопряжения
+#define BLE_RESET_PIN          0        // кнопка BOOT
+#define BLE_RESET_HOLD_MS      5000     // сколько держать для сброса сопряжений
+
+#if BLE_SECURE
+  #define BLE_PROP_AUTH_RW  (NIMBLE_PROPERTY::READ_AUTHEN | NIMBLE_PROPERTY::WRITE_AUTHEN)
+  #define BLE_PROP_AUTH_W   (NIMBLE_PROPERTY::WRITE_AUTHEN)
+#else
+  #define BLE_PROP_AUTH_RW  0
+  #define BLE_PROP_AUTH_W   0
+#endif
+
+volatile uint16_t bleConnHandle = 0xFFFF;   // единственное допустимое соединение
+volatile uint32_t bleConnAt = 0;            // когда оно установлено
+volatile bool     bleLinkSecure = false;    // канал зашифрован и аутентифицирован
+volatile bool     bleConnFailCounted = false; // неудача этого соединения уже учтена
+volatile uint8_t  bleAuthFails = 0;
+volatile uint32_t bleLockUntil = 0;         // до какого момента сопряжение заблокировано
+volatile bool     bleResetHolding = false;  // идёт отсчёт удержания BOOT (для светодиода)
+volatile uint32_t bleResetDoneAt = 0;       // когда выполнен сброс (для светодиода)
+
+// Кадр CAN в очереди canTask -> sdTask. Определён ДО первой функции:
+// Arduino IDE вставляет автопрототипы функций перед первой функцией файла,
+// и тип из прототипа (canTimeFrame, logWriteFrame) должен быть уже известен.
+struct CanLogEntry {
+  uint32_t timestamp;
+  uint32_t id;
+  uint8_t  dlc;
+  uint8_t  flags;     // бит0 = 29-bit (extended), бит1 = remote (RTR)
+  uint8_t  data[8];
+};
+#define LOGF_EXTD  0x01
+#define LOGF_RTR   0x02
+
+// Клиент прошёл защиту? При BLE_PASSKEY 0 допускаются все.
+static bool bleAuthorized(const NimBLEConnInfo& ci) {
+#if BLE_SECURE
+  return ci.isEncrypted() && ci.isAuthenticated();
+#else
+  (void)ci;
+  return true;
+#endif
+}
+
+static void bleAuthFailed(const char* why) {
+  bleConnFailCounted = true;
+  bleAuthFails++;
+  Serial.printf("BLE: %s (неудач подряд: %u)\n", why, (unsigned)bleAuthFails);
+  if (bleAuthFails >= BLE_MAX_AUTH_FAILS) {
+    bleAuthFails = 0;
+    bleLockUntil = millis() + BLE_LOCK_MS;
+    Serial.println("BLE: слишком много неудач — сопряжение заблокировано на 60 с");
+  }
+}
+
+// Стереть все сопряжения и отключить клиентов (BOOT 5 с)
+static void bleDoResetPairings() {
+  NimBLEDevice::deleteAllBonds();
+  NimBLEServer* s = NimBLEDevice::getServer();
+  if (s) {
+    for (uint16_t h : s->getPeerDevices()) s->disconnect(h);
+  }
+  bleAuthFails = 0;
+  bleLockUntil = 0;
+  bleResetDoneAt = millis();
+  Serial.println("BLE: все сопряжения сброшены (BOOT 5 с) — устройство готово к новому сопряжению");
+}
+
+// Клиент не прошёл сопряжение за BLE_AUTH_TIMEOUT_MS — отключаем
+static void bleSecurityWatchdog() {
+#if BLE_SECURE
+  uint16_t h = bleConnHandle;
+  if (h != 0xFFFF && !bleLinkSecure && millis() - bleConnAt > BLE_AUTH_TIMEOUT_MS) {
+    bleConnHandle = 0xFFFF;
+    if (!bleConnFailCounted) bleAuthFailed("клиент не прошёл сопряжение вовремя");
+    Serial.println("BLE: отключаю клиента без сопряжения");
+    NimBLEServer* s = NimBLEDevice::getServer();
+    if (s) s->disconnect(h);
+  }
+#endif
+}
+
+// Отдельная задача: кнопка BOOT и сторожевой таймер сопряжения
+static void bleResetTask(void*) {
+  pinMode(BLE_RESET_PIN, INPUT_PULLUP);
+  uint32_t t0 = 0;
+  for (;;) {
+    if (digitalRead(BLE_RESET_PIN) == LOW) {
+      if (!t0) t0 = millis();
+      uint32_t held = millis() - t0;
+      bleResetHolding = held >= 500;                 // короче 0.5 с — не считаем
+      if (held >= BLE_RESET_HOLD_MS) {
+        bleResetHolding = false;
+        bleDoResetPairings();
+        while (digitalRead(BLE_RESET_PIN) == LOW) vTaskDelay(pdMS_TO_TICKS(50));   // ждём отпускания
+        t0 = 0;
+      }
+    } else {
+      t0 = 0;
+      bleResetHolding = false;
+    }
+    bleSecurityWatchdog();
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+// Вызывается из setupBLE() сразу после NimBLEDevice::init()
+static void bleSecuritySetup() {
+#if BLE_SECURE
+  NimBLEDevice::setSecurityAuth(true, true, true);              // bonding, MITM, Secure Connections
+  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);       // мы "показываем" код, клиент вводит
+  NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+  NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+  Serial.printf("BLE: защита включена (код доступа), запомнено клиентов: %d из %d\n",
+                NimBLEDevice::getNumBonds(), BLE_MAX_BONDS);
+  xTaskCreatePinnedToCore(bleResetTask, "bleReset", 3072, NULL, 1, NULL, 1);
+#else
+  Serial.println("BLE: защита ВЫКЛЮЧЕНА (BLE_PASSKEY 0 в secrets.h) — доступ открыт всем");
+#endif
+}
+
 // Пакет с сырыми данными наблюдаемого кадра
 struct __attribute__((packed)) WatchedFramePacket {
   uint32_t id;
@@ -417,18 +574,6 @@ RTC_PCF8563 rtcPcf;   // 0x51
 WebServer webServer(80);
 String currentDateFolder;
 String   currentLogName;          // имя текущего файла без папки
-// Кадр CAN в очереди canTask -> sdTask. Определён ДО первой функции:
-// Arduino IDE вставляет автопрототипы функций перед первой функцией файла,
-// и тип из прототипа (canTimeFrame, logWriteFrame) должен быть уже известен.
-struct CanLogEntry {
-  uint32_t timestamp;
-  uint32_t id;
-  uint8_t  dlc;
-  uint8_t  flags;     // бит0 = 29-bit (extended), бит1 = remote (RTR)
-  uint8_t  data[8];
-};
-#define LOGF_EXTD  0x01
-#define LOGF_RTR   0x02
 
 // Папка, в которой sdTask сейчас ведёт запись — копия для веб-потока
 // (удалять её нельзя). Фиксированный буфер под спинлоком: String между
@@ -1023,6 +1168,17 @@ bool webPortalActive() {
   if (!webActivitySeen) return false;
   if (WiFi.softAPgetStationNum() == 0) return false;
   return (millis() - lastWebActivityMs) < WEB_HOLD_MS;
+}
+
+// Портал держит карту: есть клиент на точке доступа и запросы за последнее время
+bool logPortalPause() {
+#if LOG_PAUSE_WHILE_PORTAL
+  if (!webActivitySeen) return false;
+  if (WiFi.softAPgetStationNum() == 0) return false;
+  return (millis() - lastWebActivityMs) < LOG_PORTAL_HOLD_MS;
+#else
+  return false;
+#endif
 }
 
 String canBitrateFormHtml() {
@@ -1759,8 +1915,7 @@ void handleDownloadTar() {
 
 // Пароль для прошивки — общий для ArduinoOTA (espota/IDE) и веб-страницы
 // /update (там логин OTA_WEB_USER). СМЕНИТЕ перед использованием.
-#define OTA_PASSWORD  "changeme123"
-#define OTA_WEB_USER  "admin"
+// OTA_PASSWORD и OTA_WEB_USER (пароль и логин прошивки по воздуху) — в secrets.h
 
 // Отдельный флаг — пока идёт OTA-заливка, ни в коем случае нельзя уходить
 // в deep sleep (даже если ACC внезапно пропало во время прошивки) — это
@@ -2039,24 +2194,63 @@ void setupWiFiAndWebServer() {
 // BLE-сервер синхронизации
 // =====================================================================
 class ServerCallbacks : public NimBLEServerCallbacks {
-  // NimBLE-Arduino 2.x: обе функции получили доп. параметр NimBLEConnInfo&,
-  // onDisconnect вдобавок — ещё и int reason. Сигнатуры должны совпадать
-  // ТОЧНО, иначе компилятор считает, что это не переопределение базового
-  // виртуального метода, а совсем другая функция.
+  // Один клиент на устройство: второго подключившегося сразу отключаем.
+  // Реклама после подключения не возобновляется до отключения клиента
+  // (advertiseOnDisconnect(false) задан при создании сервера).
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
-    Serial.printf("BLE клиент подключился: %s (ждём подписку на уведомления)\n",
-                  connInfo.getAddress().toString().c_str());
-    // Реклама продолжается: одновременно могут быть подключены камера и HUD
-    NimBLEDevice::startAdvertising();
+    if (pServer->getConnectedCount() > 1) {
+      Serial.println("BLE: второй клиент — отключаю (устройство принимает одного)");
+      pServer->disconnect(connInfo.getConnHandle());
+      return;
+    }
+    bleConnHandle = connInfo.getConnHandle();
+    bleConnAt = millis();
+    bleLinkSecure = false;
+    bleConnFailCounted = false;
+    Serial.printf("BLE: подключился %s\n", connInfo.getAddress().toString().c_str());
+#if BLE_SECURE
+    NimBLEDevice::startSecurity(connInfo.getConnHandle());      // требуем сопряжение сразу
+#endif
   }
+
+  // Код, который должен ввести клиент. Слот занят (клиент уже сопряжён) или
+  // идёт блокировка после неудач — выдаём случайное число: новое сопряжение
+  // невозможно, а запомненный клиент входит по сохранённым ключам.
+  uint32_t onPassKeyDisplay() override {
+    bool slotFull = NimBLEDevice::getNumBonds() >= BLE_MAX_BONDS;
+    bool locked = millis() < bleLockUntil;
+    if (slotFull || locked) {
+      Serial.println(slotFull ? "BLE: слот занят — новое сопряжение не принимается (сброс: BOOT 5 с)"
+                              : "BLE: сопряжение временно заблокировано");
+      return 100000 + (esp_random() % 900000);
+    }
+    return BLE_PASSKEY;
+  }
+
+  void onAuthenticationComplete(NimBLEConnInfo& connInfo) override {
+    if (connInfo.isEncrypted() && connInfo.isAuthenticated()) {
+      bleLinkSecure = true;
+      bleAuthFails = 0;
+      Serial.println("BLE: канал зашифрован, клиент прошёл сопряжение");
+    } else {
+      // Не отключаем сразу: клиент может сам повторить сопряжение (например,
+      // после потери ключа). Недопущённого отключит сторожевой таймер, а
+      // подписки и запись ACL до сопряжения всё равно отклоняются.
+      bleAuthFailed("сопряжение не удалось");
+    }
+  }
+
   void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+    bool wasMain = (connInfo.getConnHandle() == bleConnHandle);
+    if (wasMain) { bleConnHandle = 0xFFFF; bleLinkSecure = false; }
     if (connInfo.getConnHandle() == aclOwnerConn) {      // автор списка ушёл — список сбрасываем
       aclCur->n = 0;
       framesSubscribed = false;
       aclOwnerConn = 0xFFFF;
-      Serial.println("BLE: клиент ACL отключился, поток кадров остановлен");
+      Serial.println("BLE: клиент ACL отключился — поток кадров остановлен");
     }
-    NimBLEDevice::startAdvertising();
+    // Рекламу возобновляем, только когда ушёл основной клиент
+    if (wasMain || bleConnHandle == 0xFFFF) NimBLEDevice::startAdvertising();
   }
 };
 
@@ -2071,6 +2265,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 // надёжная точка для однократной отправки.
 class SyncCharCallbacks : public NimBLECharacteristicCallbacks {
   void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+    if (subValue != 0 && !bleAuthorized(connInfo)) { Serial.println("BLE: подписка на время отклонена — нет сопряжения"); return; }
     if (subValue == 0) return; // клиент отписался — ничего не шлём
 
     SyncPacket packet;
@@ -2091,6 +2286,7 @@ class SyncCharCallbacks : public NimBLECharacteristicCallbacks {
 // little-endian, как формирует наш же клиентский код на LCD)
 class WatchSelectCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+    if (!bleAuthorized(connInfo)) return;
     std::string val = pCharacteristic->getValue();
     if (val.length() >= sizeof(uint32_t)) {
       uint32_t newId;
@@ -2105,6 +2301,7 @@ class WatchSelectCallbacks : public NimBLECharacteristicCallbacks {
 // (только байт версии) — остановить поток.
 class AclCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+    if (!bleAuthorized(connInfo)) { Serial.println("BLE ACL: клиент не прошёл сопряжение — список не принят"); return; }
     NimBLEAttValue v = pCharacteristic->getValue();
     size_t L = v.length();
     const uint8_t* d = v.data();
@@ -2127,6 +2324,7 @@ class AclCallbacks : public NimBLECharacteristicCallbacks {
 // Подписка на поток кадров: запоминаем MTU соединения для размера пачки
 class FramesCallbacks : public NimBLECharacteristicCallbacks {
   void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+    if (subValue != 0 && !bleAuthorized(connInfo)) { framesSubscribed = false; Serial.println("BLE: подписка отклонена — нет сопряжения (подписывайтесь после шифрования)"); return; }
     framesSubscribed = subValue != 0;
     framesMtu = connInfo.getMTU();
     Serial.printf("BLE: подписка на поток кадров %s, MTU %u\n", framesSubscribed ? "вкл" : "выкл", framesMtu);
@@ -2139,6 +2337,7 @@ class FramesCallbacks : public NimBLECharacteristicCallbacks {
 
 void setupBLESync() {
   NimBLEDevice::init(SNIFFER_BLE_NAME);
+  bleSecuritySetup();                 // защита: код доступа, один клиент, сброс по BOOT
   NimBLEDevice::setMTU(247);          // крупные пачки кадров в одном уведомлении
 
   bleQueue = xQueueCreate(ACL_QUEUE_LEN, sizeof(AclFrame));
@@ -2146,6 +2345,7 @@ void setupBLESync() {
 
   NimBLEServer* pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
+  pServer->advertiseOnDisconnect(false);   // рекламу возобновляем сами (один клиент)
 
   NimBLEService* pService = pServer->createService(SYNC_SERVICE_UUID);
   syncCharacteristic = pService->createCharacteristic(
@@ -2157,7 +2357,7 @@ void setupBLESync() {
   // Выбор наблюдаемого ID — LCD пишет сюда 4 байта (uint32) нужного ID
   watchSelectCharacteristic = pService->createCharacteristic(
       WATCH_SELECT_CHAR_UUID,
-      NIMBLE_PROPERTY::WRITE
+      NIMBLE_PROPERTY::WRITE | BLE_PROP_AUTH_W
   );
   watchSelectCharacteristic->setCallbacks(new WatchSelectCallbacks());
 
@@ -2170,7 +2370,7 @@ void setupBLESync() {
 
   // Поток кадров по ACL: список правил (WRITE/READ) и сами кадры (NOTIFY)
   aclCharacteristic = pService->createCharacteristic(
-      ACL_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::READ, 1 + ACL_MAX_RULES * sizeof(AclRule));
+      ACL_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::READ | BLE_PROP_AUTH_RW, 1 + ACL_MAX_RULES * sizeof(AclRule));
   aclCharacteristic->setCallbacks(new AclCallbacks());
   framesCharacteristic = pService->createCharacteristic(FRAMES_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY, 512);
   framesCharacteristic->setCallbacks(new FramesCallbacks());
@@ -2412,6 +2612,8 @@ static SemaphoreHandle_t   lzStartSem = nullptr, lzDoneSem = nullptr;
 static volatile bool       lzEof = false;       // больше данных не будет
 static volatile bool       lzFailed = false;    // кодер не смог стартовать
 static volatile uint32_t   lzOutBytes = 0;      // сжатых байт в файле
+static volatile uint32_t   lzShortWrites = 0;   // сколько раз SD приняла меньше, чем просили
+static volatile int        lzWriteErr = 0;      // код ошибки файла на момент сбоя записи
 static uint32_t            lzLastFlush = 0;
 
 static void* lzAllocF(ISzAllocPtr, size_t n) {
@@ -2435,6 +2637,10 @@ static SRes lzRead(ISeqInStreamPtr, void* buf, size_t* size) {
 // Выход кодера: в файл. Раз в секунду — flush (обновить размер в FAT)
 static size_t lzWrite(ISeqOutStreamPtr, const void* buf, size_t size) {
   size_t w = canLogFile.write((const uint8_t*)buf, size);
+  if (w != size) {                    // SD не приняла данные: кодер вернёт SZ_ERROR_WRITE (9)
+    lzShortWrites++;
+    lzWriteErr = canLogFile.getWriteError();
+  }
   lzOutBytes += w;
   logOutTotal += w;
   if (millis() - lzLastFlush >= 1000) { canLogFile.flush(); lzLastFlush = millis(); }
@@ -2472,7 +2678,13 @@ void lzTask(void*) {
     }
     if (r != SZ_OK) {
       lzFailed = true;
-      errLog("LZMA: ошибка кодера %d (памяти мало?) — данные файла %s теряются", (int)r, currentLogName.c_str());
+      if (r == SZ_ERROR_WRITE)
+        errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d) — карта не приняла данные; пробую перемонтировать и открыть новый файл",
+               currentLogName.c_str(), lzWriteErr);
+      else if (r == SZ_ERROR_MEM)
+        errLog("LZMA: не хватило памяти под кодер (код 2) — файл %s не пишется, пробую новый", currentLogName.c_str());
+      else
+        errLog("LZMA: ошибка кодера %d — файл %s не пишется, пробую новый", (int)r, currentLogName.c_str());
       // Выгребаем вход до конца, чтобы sdTask не повис на полном буфере
       uint8_t junk[256];
       while (!(lzEof && xStreamBufferIsEmpty(lzSb)))
@@ -2495,6 +2707,7 @@ void lzStartFile() {
   xStreamBufferReset(lzSb);
   lzEof = false;
   lzFailed = false;
+  lzWriteErr = 0;
   lzOutBytes = 0;
   lzLastFlush = millis();
   xSemaphoreGive(lzStartSem);
@@ -2709,6 +2922,17 @@ void setupSD() {
   Serial.println("Лог: жду первый кадр CAN — файл будет создан при появлении данных");
 }
 
+// Перемонтировать SD после сбоя записи (вибрация, просадка питания, контакт)
+static bool sdRemount() {
+  sdMounted = false;
+  SD_MMC.end();
+  delay(100);
+  SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
+  bool ok = SD_MMC.begin("/sdcard", true, false, 10000);   // после сбоя — 10 МГц
+  sdMounted = ok;
+  return ok;
+}
+
 // =====================================================================
 // canTask — только приём
 // =====================================================================
@@ -2863,10 +3087,43 @@ static String   logPendingPrev;             // имя предыдущего ф�
 static uint32_t logLastOpenFail = 0;        // не долбить SD при ошибке открытия
 static bool     logOpenFailed = false;
 static uint32_t logSinceFlush = 0;
+static bool     logNeedRemount = false;     // после сбоя записи: SD перемонтировать
+static uint32_t logFailAt = 0;              // когда случился сбой (для отчёта о потере)
+static uint8_t  logRecoverTries = 0;
 
 // Записать один кадр: при необходимости открыть файл, записать строку,
 // сделать ротацию. false — файл открыть не удалось (кадр потерян).
 bool logWriteFrame(const CanLogEntry& entry) {
+#if LOG_COMPRESS == 2
+  // Кодер упал (обычно — SD не приняла запись): закрываем файл и уходим
+  // на перемонтирование + новый файл. Без перезагрузки и без зажигания.
+  if (lzFailed && canLogFile) {
+    String prev = currentLogName;
+    logClose();
+    setActiveLogPath("");
+    logPendingPrev = prev;
+    logSinceFlush = 0;
+    logNeedRemount = true;
+    logFailAt = millis();
+    logRecoverTries = 0;
+    logLastOpenFail = 0;
+  }
+  if (logNeedRemount && !canLogFile) {
+    if (sdBusy) return false;
+    if (logLastOpenFail && millis() - logLastOpenFail < 5000) return false;   // не чаще раза в 5 с
+    logLastOpenFail = millis() ? millis() : 1;
+    bool ok = sdRemount();
+    if (!ok) {
+      if (logRecoverTries++ == 0) errLog("SD: перемонтирование не удалось, повторяю каждые 5 с");
+      return false;
+    }
+    logNeedRemount = false;
+    logOpenFailed = false;
+    logLastOpenFail = 0;
+    errLog("SD: перемонтирована, запись возобновляется (простой %lu мс, попыток %u)",
+           (unsigned long)(millis() - logFailAt), (unsigned)(logRecoverTries + 1));
+  }
+#endif
   if (!canLogFile) {
     if (sdBusy || !sdMounted) return false;   // карта форматируется / не смонтирована
     if (logOpenFailed && millis() - logLastOpenFail < 5000) return false;   // SD недоступна
@@ -2992,6 +3249,39 @@ void sdTask(void* param) {
 
     canTimeFrame(entry);   // время из CAN: выставит часы, если нужно
 
+#if LOG_PAUSE_WHILE_PORTAL
+    // Портал в работе — на SD не пишем. Файл закрыт, кадры за это время не сохраняются.
+    {
+      static bool     portalPaused = false;
+      static uint32_t pausedFrames = 0;
+      if (logPortalPause()) {
+        if (!portalPaused) {
+          portalPaused = true;
+          pausedFrames = 0;
+          if (canLogFile) {
+            String prev = currentLogName;
+            char m[96];
+            int k = snprintf(m, sizeof(m), "# %lu ===== PAUSE (portal) ===== dropped=%lu\n",
+                             (unsigned long)millis(), (unsigned long)canDroppedTotal);
+            logWrite(m, k);
+            logClose();
+            logSinceFlush = 0;
+            logPendingPrev = prev;
+            setActiveLogPath("");
+          }
+          Serial.println("[SD task] Портал в работе — запись лога приостановлена");
+        }
+        pausedFrames++;
+        continue;
+      }
+      if (portalPaused) {
+        portalPaused = false;
+        Serial.printf("[SD task] Портал свободен — запись продолжается (пропущено кадров: %lu)\n",
+                      (unsigned long)pausedFrames);
+      }
+    }
+#endif
+
 #if CAN_TIME_SYNC
     if (!timeWaitDone && !canLogFile) {
       if (!timeValid) {
@@ -3101,6 +3391,15 @@ void ledOff() {
 void ledTask(void* param) {
   const uint8_t B = RGB_LED_BRIGHTNESS;
   for (;;) {
+    // Сброс сопряжений BLE: фиолетовое мигание — держите BOOT; белое — сброшено
+    if (bleResetHolding || (bleResetDoneAt && millis() - bleResetDoneAt < 1500)) {
+      bool done = !bleResetHolding;
+      if (!ledStopped) ledWrite(B, done ? B : 0, B);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      if (!ledStopped) ledWrite(0, 0, 0);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
     uint32_t used = 0;
     if (!ledStopped) {
 #if LOG_COMPRESS == 2
