@@ -102,7 +102,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.9.0"
+#define FW_VERSION   "2.9.1"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -137,7 +137,7 @@
 // Файловая система логов: SD_MMC на WROOM CAM, SD (SPI) на Super Mini.
 // Весь код ниже работает через LOGFS — API у обеих одинаковый.
 #define LOGFS SD_MMC
-#define SDMMC_LOG_KHZ    10000   // частота SD_MMC при записи лога, кГц
+#define SDMMC_LOG_KHZ    20000   // частота SD_MMC при записи лога, кГц
 #define SDMMC_PORTAL_KHZ 20000   // пока работает портал (запись остановлена)
 #define SD_FREQ_LOG    SDMMC_LOG_KHZ
 #define SD_FREQ_PORTAL SDMMC_PORTAL_KHZ
@@ -703,7 +703,7 @@ static void errWriteLine(const String& line) {
 }
 
 void errLog(const char* fmt, ...) {
-  char msg[200];
+  char msg[360];
   va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
   char ts[48] = "время неизвестно";   // UTF-8: кириллица по 2 байта
   if (timeValid) {
@@ -2713,8 +2713,10 @@ void lzTask(void*) {
     if (r != SZ_OK) {
       lzFailed = true;
       if (r == SZ_ERROR_WRITE)
-        errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d) — карта не приняла данные; пробую перемонтировать и открыть новый файл",
-               currentLogName.c_str(), lzWriteErr);
+        errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d, повторов %lu) ble=%s sub=%d heap=%u psram=%u — карта не приняла данные; пробую перемонтировать и открыть новый файл",
+               currentLogName.c_str(), lzWriteErr, (unsigned long)lzRetries,
+               bleConnHandle != 0xFFFF ? "conn" : "-", (int)framesSubscribed,
+               (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
       else if (r == SZ_ERROR_MEM)
         errLog("LZMA: не хватило памяти под кодер (код 2) — файл %s не пишется, пробую новый", currentLogName.c_str());
       else
@@ -2732,8 +2734,11 @@ void lzSetup() {
   lzSb       = xStreamBufferCreate(32 * 1024, 1);
   lzStartSem = xSemaphoreCreateBinary();
   lzDoneSem  = xSemaphoreCreateBinary();
-  // Ядро 0: там же приём CAN (приоритет выше) и WiFi; ядро 1 остаётся вебу и SD
-  xTaskCreatePinnedToCore(lzTask, "lzTask", 8192, NULL, 1, NULL, 0);
+  // Ядро 1: запись на SD вместе с sdTask. На ядре 0 работают радио BLE/WiFi и
+  // приём CAN (приоритет выше): под потоком BLE к HUD запись на SD там срывалась
+  // (LZMA код 9). Веб-портал и сжатие вместе не работают — на время портала
+  // запись лога остановлена.
+  xTaskCreatePinnedToCore(lzTask, "lzTask", 8192, NULL, 1, NULL, 1);
 }
 
 // Запустить кодер для только что открытого canLogFile

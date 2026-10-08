@@ -117,7 +117,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.9.0"
+#define FW_VERSION   "2.9.1"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -268,11 +268,9 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 // ---------- Частота SPI для SD ----------
 // 20 МГц — нормально для коротких проводов на макетке; не заведётся —
 // автоматически будет 4 МГц (как было раньше)
-// Частота SPI карты. Лог — единицы КБ/с, 4 МГц хватает с запасом; 20 МГц на
-// проводах давали сбои записи (LZMA код 9). Поднимайте (10/20 МГц) только при
-// коротком надёжном монтаже — это ускорит скачивание, но не запись.
-#define SD_SPI_FREQ_FAST    4000000   // запись лога
-#define SD_SPI_FREQ_PORTAL 20000000   // пока работает портал (запись остановлена): быстрое скачивание
+// Частота SPI карты. Проверено: на сбои записи (LZMA код 9) частота не влияет.
+#define SD_SPI_FREQ_FAST   20000000   // запись лога
+#define SD_SPI_FREQ_PORTAL 20000000   // пока работает портал (запись остановлена)
 #define SD_FREQ_LOG    SD_SPI_FREQ_FAST
 #define SD_FREQ_PORTAL SD_SPI_FREQ_PORTAL
 #define SD_SPI_FREQ_SAFE    4000000
@@ -724,7 +722,7 @@ static void errWriteLine(const String& line) {
 }
 
 void errLog(const char* fmt, ...) {
-  char msg[200];
+  char msg[360];
   va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
   char ts[48] = "время неизвестно";   // UTF-8: кириллица по 2 байта
   if (timeValid) {
@@ -2734,8 +2732,10 @@ void lzTask(void*) {
     if (r != SZ_OK) {
       lzFailed = true;
       if (r == SZ_ERROR_WRITE)
-        errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d) — карта не приняла данные; пробую перемонтировать и открыть новый файл",
-               currentLogName.c_str(), lzWriteErr);
+        errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d, повторов %lu) ble=%s sub=%d heap=%u psram=%u — карта не приняла данные; пробую перемонтировать и открыть новый файл",
+               currentLogName.c_str(), lzWriteErr, (unsigned long)lzRetries,
+               bleConnHandle != 0xFFFF ? "conn" : "-", (int)framesSubscribed,
+               (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
       else if (r == SZ_ERROR_MEM)
         errLog("LZMA: не хватило памяти под кодер (код 2) — файл %s не пишется, пробую новый", currentLogName.c_str());
       else
@@ -2753,8 +2753,11 @@ void lzSetup() {
   lzSb       = xStreamBufferCreate(32 * 1024, 1);
   lzStartSem = xSemaphoreCreateBinary();
   lzDoneSem  = xSemaphoreCreateBinary();
-  // Ядро 0: там же приём CAN (приоритет выше) и WiFi; ядро 1 остаётся вебу и SD
-  xTaskCreatePinnedToCore(lzTask, "lzTask", 8192, NULL, 1, NULL, 0);
+  // Ядро 1: запись на SD вместе с sdTask. На ядре 0 работают радио BLE/WiFi и
+  // приём CAN (приоритет выше): под потоком BLE к HUD запись на SD там срывалась
+  // (LZMA код 9). Веб-портал и сжатие вместе не работают — на время портала
+  // запись лога остановлена.
+  xTaskCreatePinnedToCore(lzTask, "lzTask", 8192, NULL, 1, NULL, 1);
 }
 
 // Запустить кодер для только что открытого canLogFile
