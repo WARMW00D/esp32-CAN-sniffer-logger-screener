@@ -32,14 +32,25 @@
   Настройки Arduino IDE: ESP32S3 Dev Module, Flash 4MB, PSRAM "QSPI PSRAM"
   (или Disabled — PSRAM не нужна), USB CDC On Boot "Enabled".
   Библиотека: NimBLE-Arduino 2.x.
+  Секреты: BLE_PASSKEY — в secrets.h (шаблон secrets.example.h, в репозиторий не
+  попадает). Защита BLE: код доступа, один клиент, сброс сопряжений —
+  удержание BOOT 5 с на работающем устройстве (см. docs/BLE_pairing_protocol_ru.md).
+
 */
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+
+#if __has_include("secrets.h")
+  #include "secrets.h"
+#else
+  #error "Нет secrets.h: скопируйте secrets.example.h в secrets.h и задайте свои значения"
+#endif
+#include "esp_random.h"
 #include <time.h>
 #include "driver/twai.h"
 
-#define FW_VERSION   "1.1.1"
+#define FW_VERSION   "1.2.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 // ---------- CAN ----------
@@ -89,6 +100,132 @@ volatile uint16_t aclOwnerConn = 0xFFFF;
 volatile uint16_t framesMtu = 23;
 volatile bool     bleDropFlag = false;
 volatile uint32_t bleSentTotal = 0, bleDroppedTotal = 0, lastBleSendMs = 0;
+
+// =====================================================================
+// Защита BLE: сопряжение по коду доступа (LE Secure Connections), один
+// запомненный клиент, сброс сопряжений удержанием BOOT 5 с.
+//   BLE_PASSKEY (secrets.h): шесть цифр; 0 — защита выключена, доступ
+//   открыт всем (как раньше). Протокол для клиентов (HUD, камера):
+//   docs/BLE_pairing_protocol_ru.md
+//   - устройство "показывает" код (IO capability DisplayOnly), клиент
+//     "вводит" его программно — человек не нужен;
+//   - пока клиент сопряжён (слот занят), новые сопряжения не принимаются:
+//     выдаётся случайный код. Сброс — BOOT 5 с на РАБОТАЮЩЕМ устройстве;
+//   - соединение без сопряжения отключается через BLE_AUTH_TIMEOUT_MS;
+//     5 неудач подряд — сопряжение блокируется на 60 с;
+//   - подписки и запись ACL принимаются только по зашифрованному каналу.
+// =====================================================================
+#define BLE_SECURE             (BLE_PASSKEY != 0)
+#define BLE_MAX_BONDS          1        // сколько клиентов можно запомнить
+#define BLE_AUTH_TIMEOUT_MS    15000    // за это время клиент должен пройти сопряжение
+#define BLE_MAX_AUTH_FAILS     5        // неудач подряд до блокировки
+#define BLE_LOCK_MS            60000    // длительность блокировки сопряжения
+#define BLE_RESET_PIN          0        // кнопка BOOT
+#define BLE_RESET_HOLD_MS      5000     // сколько держать для сброса сопряжений
+
+#if BLE_SECURE
+  #define BLE_PROP_AUTH_RW  (NIMBLE_PROPERTY::READ_AUTHEN | NIMBLE_PROPERTY::WRITE_AUTHEN)
+  #define BLE_PROP_AUTH_W   (NIMBLE_PROPERTY::WRITE_AUTHEN)
+#else
+  #define BLE_PROP_AUTH_RW  0
+  #define BLE_PROP_AUTH_W   0
+#endif
+
+volatile uint16_t bleConnHandle = 0xFFFF;   // единственное допустимое соединение
+volatile uint32_t bleConnAt = 0;            // когда оно установлено
+volatile bool     bleLinkSecure = false;    // канал зашифрован и аутентифицирован
+volatile bool     bleConnFailCounted = false; // неудача этого соединения уже учтена
+volatile uint8_t  bleAuthFails = 0;
+volatile uint32_t bleLockUntil = 0;         // до какого момента сопряжение заблокировано
+volatile bool     bleResetHolding = false;  // идёт отсчёт удержания BOOT (для светодиода)
+volatile uint32_t bleResetDoneAt = 0;       // когда выполнен сброс (для светодиода)
+
+// Клиент прошёл защиту? При BLE_PASSKEY 0 допускаются все.
+static bool bleAuthorized(const NimBLEConnInfo& ci) {
+#if BLE_SECURE
+  return ci.isEncrypted() && ci.isAuthenticated();
+#else
+  (void)ci;
+  return true;
+#endif
+}
+
+static void bleAuthFailed(const char* why) {
+  bleConnFailCounted = true;
+  bleAuthFails++;
+  Serial.printf("BLE: %s (неудач подряд: %u)\n", why, (unsigned)bleAuthFails);
+  if (bleAuthFails >= BLE_MAX_AUTH_FAILS) {
+    bleAuthFails = 0;
+    bleLockUntil = millis() + BLE_LOCK_MS;
+    Serial.println("BLE: слишком много неудач — сопряжение заблокировано на 60 с");
+  }
+}
+
+// Стереть все сопряжения и отключить клиентов (BOOT 5 с)
+static void bleDoResetPairings() {
+  NimBLEDevice::deleteAllBonds();
+  NimBLEServer* s = NimBLEDevice::getServer();
+  if (s) {
+    for (uint16_t h : s->getPeerDevices()) s->disconnect(h);
+  }
+  bleAuthFails = 0;
+  bleLockUntil = 0;
+  bleResetDoneAt = millis();
+  Serial.println("BLE: все сопряжения сброшены (BOOT 5 с) — устройство готово к новому сопряжению");
+}
+
+// Клиент не прошёл сопряжение за BLE_AUTH_TIMEOUT_MS — отключаем
+static void bleSecurityWatchdog() {
+#if BLE_SECURE
+  uint16_t h = bleConnHandle;
+  if (h != 0xFFFF && !bleLinkSecure && millis() - bleConnAt > BLE_AUTH_TIMEOUT_MS) {
+    bleConnHandle = 0xFFFF;
+    if (!bleConnFailCounted) bleAuthFailed("клиент не прошёл сопряжение вовремя");
+    Serial.println("BLE: отключаю клиента без сопряжения");
+    NimBLEServer* s = NimBLEDevice::getServer();
+    if (s) s->disconnect(h);
+  }
+#endif
+}
+
+// Отдельная задача: кнопка BOOT и сторожевой таймер сопряжения
+static void bleResetTask(void*) {
+  pinMode(BLE_RESET_PIN, INPUT_PULLUP);
+  uint32_t t0 = 0;
+  for (;;) {
+    if (digitalRead(BLE_RESET_PIN) == LOW) {
+      if (!t0) t0 = millis();
+      uint32_t held = millis() - t0;
+      bleResetHolding = held >= 500;                 // короче 0.5 с — не считаем
+      if (held >= BLE_RESET_HOLD_MS) {
+        bleResetHolding = false;
+        bleDoResetPairings();
+        while (digitalRead(BLE_RESET_PIN) == LOW) vTaskDelay(pdMS_TO_TICKS(50));   // ждём отпускания
+        t0 = 0;
+      }
+    } else {
+      t0 = 0;
+      bleResetHolding = false;
+    }
+    bleSecurityWatchdog();
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+// Вызывается из setupBLE() сразу после NimBLEDevice::init()
+static void bleSecuritySetup() {
+#if BLE_SECURE
+  NimBLEDevice::setSecurityAuth(true, true, true);              // bonding, MITM, Secure Connections
+  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);       // мы "показываем" код, клиент вводит
+  NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+  NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+  Serial.printf("BLE: защита включена (код доступа), запомнено клиентов: %d из %d\n",
+                NimBLEDevice::getNumBonds(), BLE_MAX_BONDS);
+  xTaskCreatePinnedToCore(bleResetTask, "bleReset", 3072, NULL, 1, NULL, 1);
+#else
+  Serial.println("BLE: защита ВЫКЛЮЧЕНА (BLE_PASSKEY 0 в secrets.h) — доступ открыт всем");
+#endif
+}
 
 
 bool hudReady() { return framesSubscribed && aclCur->n > 0; }
@@ -192,21 +329,69 @@ void carTimeFrame(const twai_message_t& m) {
 struct __attribute__((packed)) SyncPacket { uint32_t millisValue; uint32_t unixEpoch; };
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer*, NimBLEConnInfo& ci) override {
-    Serial.printf("BLE: подключился %s\n", ci.getAddress().toString().c_str());
-    NimBLEDevice::startAdvertising();      // камера и HUD могут быть подключены вместе
-  }
-  void onDisconnect(NimBLEServer*, NimBLEConnInfo& ci, int) override {
-    if (ci.getConnHandle() == aclOwnerConn) {
-      aclCur->n = 0; framesSubscribed = false; aclOwnerConn = 0xFFFF;
-      Serial.println("BLE: клиент ACL отключился — поток остановлен");
+  // Один клиент на устройство: второго подключившегося сразу отключаем.
+  // Реклама после подключения не возобновляется до отключения клиента
+  // (advertiseOnDisconnect(false) задан при создании сервера).
+  void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+    if (pServer->getConnectedCount() > 1) {
+      Serial.println("BLE: второй клиент — отключаю (устройство принимает одного)");
+      pServer->disconnect(connInfo.getConnHandle());
+      return;
     }
-    NimBLEDevice::startAdvertising();
+    bleConnHandle = connInfo.getConnHandle();
+    bleConnAt = millis();
+    bleLinkSecure = false;
+    bleConnFailCounted = false;
+    Serial.printf("BLE: подключился %s\n", connInfo.getAddress().toString().c_str());
+#if BLE_SECURE
+    NimBLEDevice::startSecurity(connInfo.getConnHandle());      // требуем сопряжение сразу
+#endif
+  }
+
+  // Код, который должен ввести клиент. Слот занят (клиент уже сопряжён) или
+  // идёт блокировка после неудач — выдаём случайное число: новое сопряжение
+  // невозможно, а запомненный клиент входит по сохранённым ключам.
+  uint32_t onPassKeyDisplay() override {
+    bool slotFull = NimBLEDevice::getNumBonds() >= BLE_MAX_BONDS;
+    bool locked = millis() < bleLockUntil;
+    if (slotFull || locked) {
+      Serial.println(slotFull ? "BLE: слот занят — новое сопряжение не принимается (сброс: BOOT 5 с)"
+                              : "BLE: сопряжение временно заблокировано");
+      return 100000 + (esp_random() % 900000);
+    }
+    return BLE_PASSKEY;
+  }
+
+  void onAuthenticationComplete(NimBLEConnInfo& connInfo) override {
+    if (connInfo.isEncrypted() && connInfo.isAuthenticated()) {
+      bleLinkSecure = true;
+      bleAuthFails = 0;
+      Serial.println("BLE: канал зашифрован, клиент прошёл сопряжение");
+    } else {
+      // Не отключаем сразу: клиент может сам повторить сопряжение (например,
+      // после потери ключа). Недопущённого отключит сторожевой таймер, а
+      // подписки и запись ACL до сопряжения всё равно отклоняются.
+      bleAuthFailed("сопряжение не удалось");
+    }
+  }
+
+  void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+    bool wasMain = (connInfo.getConnHandle() == bleConnHandle);
+    if (wasMain) { bleConnHandle = 0xFFFF; bleLinkSecure = false; }
+    if (connInfo.getConnHandle() == aclOwnerConn) {      // автор списка ушёл — список сбрасываем
+      aclCur->n = 0;
+      framesSubscribed = false;
+      aclOwnerConn = 0xFFFF;
+      Serial.println("BLE: клиент ACL отключился — поток кадров остановлен");
+    }
+    // Рекламу возобновляем, только когда ушёл основной клиент
+    if (wasMain || bleConnHandle == 0xFFFF) NimBLEDevice::startAdvertising();
   }
 };
 
 class AclCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& ci) override {
+    if (!bleAuthorized(ci)) { Serial.println("BLE ACL: клиент не прошёл сопряжение — список не принят"); return; }
     NimBLEAttValue v = c->getValue();
     size_t L = v.length(); const uint8_t* d = v.data();
     if (L < 1 || d[0] != ACL_VERSION || (L - 1) % sizeof(AclRule) != 0) {
@@ -227,6 +412,7 @@ class AclCallbacks : public NimBLECharacteristicCallbacks {
 
 class FramesCallbacks : public NimBLECharacteristicCallbacks {
   void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo& ci, uint16_t sub) override {
+    if (sub != 0 && !bleAuthorized(ci)) { framesSubscribed = false; Serial.println("BLE: подписка отклонена — нет сопряжения (подписывайтесь после шифрования)"); return; }
     framesSubscribed = sub != 0;
     framesMtu = ci.getMTU();
     Serial.printf("BLE: подписка на поток %s, MTU %u\n", framesSubscribed ? "вкл" : "выкл", framesMtu);
@@ -234,7 +420,8 @@ class FramesCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 class SyncCallbacks : public NimBLECharacteristicCallbacks {
-  void onSubscribe(NimBLECharacteristic* c, NimBLEConnInfo&, uint16_t sub) override {
+  void onSubscribe(NimBLECharacteristic* c, NimBLEConnInfo& ci, uint16_t sub) override {
+    if (sub != 0 && !bleAuthorized(ci)) { Serial.println("BLE: подписка на время отклонена — нет сопряжения"); return; }
     if (!sub) return;
     uint32_t now = millis();
     uint32_t epoch = carEpoch ? carEpoch + (now - carEpochAtMs) / 1000 : 0;
@@ -247,16 +434,18 @@ class SyncCallbacks : public NimBLECharacteristicCallbacks {
 
 void setupBLE() {
   NimBLEDevice::init(BLE_NAME);
+  bleSecuritySetup();                 // защита: код доступа, один клиент, сброс по BOOT
   NimBLEDevice::setMTU(247);
   bleQueue = xQueueCreate(ACL_QUEUE_LEN, sizeof(AclFrame));
   xTaskCreatePinnedToCore(bleTxTask, "bleTx", 4096, NULL, 1, NULL, 1);
 
   NimBLEServer* srv = NimBLEDevice::createServer();
   srv->setCallbacks(new ServerCallbacks());
+  srv->advertiseOnDisconnect(false);   // рекламу возобновляем сами (один клиент)
   NimBLEService* svc = srv->createService(SYNC_SERVICE_UUID);
   syncCharacteristic = svc->createCharacteristic(SYNC_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY);
   syncCharacteristic->setCallbacks(new SyncCallbacks());
-  aclCharacteristic = svc->createCharacteristic(ACL_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::READ,
+  aclCharacteristic = svc->createCharacteristic(ACL_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::READ | BLE_PROP_AUTH_RW,
                                                 1 + ACL_MAX_RULES * sizeof(AclRule));
   aclCharacteristic->setCallbacks(new AclCallbacks());
   framesCharacteristic = svc->createCharacteristic(FRAMES_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY, 512);
@@ -329,6 +518,15 @@ void canTask(void*) {
 void ledTask(void*) {
   const uint8_t B = RGB_LED_BRIGHTNESS;
   for (;;) {
+    // Сброс сопряжений BLE: фиолетовое мигание — держите BOOT; белое — сброшено
+    if (bleResetHolding || (bleResetDoneAt && millis() - bleResetDoneAt < 1500)) {
+      bool done = !bleResetHolding;
+      rgbLedWrite(RGB_LED_PIN, B, done ? B : 0, B);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      rgbLedWrite(RGB_LED_PIN, 0, 0, 0);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
     bool hud = framesSubscribed && aclCur->n;
     if (!canRunning) rgbLedWrite(RGB_LED_PIN, B, 0, 0);
     else if (!hud)   rgbLedWrite(RGB_LED_PIN, 0, 0, B);
