@@ -102,7 +102,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.9.1"
+#define FW_VERSION   "2.10.0"
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -256,6 +256,14 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 // ---------- Режим CAN ----------
 // 1 = машина (LISTEN_ONLY), 0 = стенд (NORMAL). См. шапку.
 #define CAN_LISTEN_ONLY  1
+
+// ---------- Standby SN65HVD230 (необязательно) ----------
+// Вывод Rs (pin 8) SN65HVD230, выведенный на GPIO (R1 на модуле снят, провод на
+// его площадку со стороны pin 8). Высокий уровень = standby (драйвер выключен,
+// ток ~0.37 мА вместо ~10 мА), низкий = рабочий режим. Прошивка держит высокий
+// уровень на время глубокого сна и сбрасывает в низкий после пробуждения.
+// -1 — не используется (TJA1051T/3, готовые модули без вывода Rs).
+#define CAN_STANDBY_PIN  -1
 
 // ---------- Пины CAN ----------
 // TX -> CTX трансивера, RX <- CRX трансивера (без перекрёста, см. шапку)
@@ -3413,6 +3421,13 @@ void armAccWakeupAndSleep() {
   // RTC-периферию держим включённой во сне — на ней живёт подтяжка
   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
   esp_sleep_enable_ext0_wakeup(ACC_PIN, ACC_ON_LEVEL == LOW ? 0 : 1);
+#if CAN_STANDBY_PIN >= 0
+  // Трансивер в standby и удержание уровня на всё время глубокого сна
+  pinMode(CAN_STANDBY_PIN, OUTPUT);
+  digitalWrite(CAN_STANDBY_PIN, HIGH);
+  gpio_hold_en((gpio_num_t)CAN_STANDBY_PIN);
+  gpio_deep_sleep_hold_en();
+#endif
   esp_deep_sleep_start();
   // Дальше код не выполняется
 }
@@ -3524,6 +3539,16 @@ void setup() {
     delay(20);
     armAccWakeupAndSleep();
   }
+
+#if CAN_STANDBY_PIN >= 0
+  // Остаёмся работать: снимаем удержание standby и включаем трансивер
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis((gpio_num_t)CAN_STANDBY_PIN);
+  pinMode(CAN_STANDBY_PIN, OUTPUT);
+  digitalWrite(CAN_STANDBY_PIN, LOW);
+  delay(2);
+  Serial.printf("CAN-трансивер: выход из standby (GPIO%d = LOW)\n", (int)CAN_STANDBY_PIN);
+#endif
 
   if (usbHost) {
     Serial.println("USB-хост подключён — сон заблокирован, пока он подключён");

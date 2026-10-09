@@ -111,6 +111,8 @@ On the WROOM CAM board GPIO4–18 are routed to the camera connector, so the sni
 
 **If you use SN65HVD230 (at your own risk), the power is different:** it is a **3.3 V chip — VCC to the 3.3 V rail (3V3p), never to 5 V** (5 V damages it). It has no VIO and no S pin; Rs → GND (high-speed mode). CTX/CRX are connected the same way (D = CTX, R = CRX). The schematics show the TJA1051T/3 connection; for SN65HVD230 simply leave the 5V wire unconnected and feed VCC from 3V3p.
 
+**SN65HVD230 and lower sleep current (optional).** According to the datasheet, pin 8 (Rs) selects the mode: below 1 V — high speed, a 10–100 kΩ resistor to ground — slope control, above 0.75·VCC — **standby** (driver off, receiver stays active; supply current 370 µA typical instead of 10 mA). The usual blue SN65HVD230 module ties pin 8 to ground through a 10 kΩ resistor (R1) and does not bring it out to the header, so the standby mode is not available out of the box. If you can only get this board, you can remove R1, solder a wire to its pad on the pin-8 side and drive it from a spare GPIO: low while the sniffer runs, high (held through deep sleep) while the car sleeps. This saves roughly 10 mA at 3.3 V in sleep. The firmware supports it: set `CAN_STANDBY_PIN` to that GPIO (default `-1` = off) and it holds the pin high through deep sleep and drives it low after wake-up. There is no true sleep mode on the SN65HVD230 — it exists only on the SN65HVD231 (marked VP231, the same footprint, 40 nA). Whatever you choose, the safety notes about this chip above still apply.
+
 Before connecting to the ESP32, check that CRX idles at ~3.3 V, not 5 V.
 
 **Termination:** the car's bus is already terminated. CANH–CANL on the sniffer must measure tens of kΩ (transceiver input). If you see ~120 Ω, remove the resistor on the transceiver board.
@@ -141,7 +143,7 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.9.1"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.10.0"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -156,6 +158,7 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 | `LOG_GZ_SYNC_MS` | `1000` | gzip only — compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
 | `WIFI_ACTIVE_MINUTES` | `5` | Wi-Fi access point, portal and espota OTA run for this many minutes after the ignition is switched on, then Wi-Fi is turned off until the next ignition-on (less heat and current). Not switched off while the portal is being used. 0 = always on |
+| `CAN_STANDBY_PIN` | `-1` | GPIO wired to the Rs pin (pin 8) of an SN65HVD230 whose R1 was removed: high = transceiver standby (held through deep sleep), low = normal. −1 = not used (TJA1051T/3 and modules without Rs) |
 | `LOG_PAUSE_WHILE_PORTAL` / `LOG_PORTAL_HOLD_MS` | `1` / `60 s` | While the portal is in use (a client on the access point and requests within the last `LOG_PORTAL_HOLD_MS`), logging to the SD card is paused: the file is closed (marker `PAUSE (portal)`), frames are not saved, and logging continues in a new file (`CONTINUED`) when the portal is idle. 0 = keep logging |
 | `SD_SPI_FREQ_FAST` / `SD_SPI_FREQ_PORTAL` (WROOM: `SDMMC_LOG_KHZ` / `SDMMC_PORTAL_KHZ`) | `20 MHz` / `20 MHz` | SD clock while logging and while the portal is in use. The write failures (LZMA code 9) turned out not to depend on the frequency, so both are 20 MHz. If you set them differently, the card is remounted when the portal pauses logging and again when it is idle |
 | `AP_CHANNEL` | `0` | 0 = pick the quietest of channels 1 / 6 / 11 at start-up (2–3 s scan; neighbour networks weighted by signal power in mW and by channel overlap, so one network at −45 dBm counts more than many at −75 dBm); 1–13 = fixed channel. The chosen channel and per-channel interference are shown in Serial and on the portal home page |
