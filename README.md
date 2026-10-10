@@ -143,7 +143,7 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.10.0"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `FW_VERSION` | `"2.10.1"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -158,6 +158,7 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 | `LOG_GZ_SYNC_MS` | `1000` | gzip only — compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
 | `WIFI_ACTIVE_MINUTES` | `5` | Wi-Fi access point, portal and espota OTA run for this many minutes after the ignition is switched on, then Wi-Fi is turned off until the next ignition-on (less heat and current). Not switched off while the portal is being used. 0 = always on |
+| `BLE_TX_POWER_DBM` | `0` | BLE transmitter power in dBm (the default of the stack is +9). The HUD is within a few metres, and a lower power means less interference on the SD lines and smaller current peaks. Raise it if the link to the HUD drops |
 | `CAN_STANDBY_PIN` | `-1` | GPIO wired to the Rs pin (pin 8) of an SN65HVD230 whose R1 was removed: high = transceiver standby (held through deep sleep), low = normal. −1 = not used (TJA1051T/3 and modules without Rs) |
 | `LOG_PAUSE_WHILE_PORTAL` / `LOG_PORTAL_HOLD_MS` | `1` / `60 s` | While the portal is in use (a client on the access point and requests within the last `LOG_PORTAL_HOLD_MS`), logging to the SD card is paused: the file is closed (marker `PAUSE (portal)`), frames are not saved, and logging continues in a new file (`CONTINUED`) when the portal is idle. 0 = keep logging |
 | `SD_SPI_FREQ_FAST` / `SD_SPI_FREQ_PORTAL` (WROOM: `SDMMC_LOG_KHZ` / `SDMMC_PORTAL_KHZ`) | `20 MHz` / `20 MHz` | SD clock while logging and while the portal is in use. The write failures (LZMA code 9) turned out not to depend on the frequency, so both are 20 MHz. If you set them differently, the card is remounted when the portal pauses logging and again when it is idle |

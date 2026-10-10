@@ -102,7 +102,11 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.10.0"
+#define FW_VERSION   "2.10.1"
+// Мощность передатчика BLE, дБм. HUD рядом (в салоне), максимум +9 не нужен: меньше
+// мощность — меньше наводок на линии SD и пики тока. Если связь с HUD рвётся — поднимите.
+#define BLE_TX_POWER_DBM  0
+
 #define FW_BUILD     __DATE__ " " __TIME__
 
 
@@ -2372,6 +2376,7 @@ class FramesCallbacks : public NimBLECharacteristicCallbacks {
 
 void setupBLESync() {
   NimBLEDevice::init(SNIFFER_BLE_NAME);
+  NimBLEDevice::setPower(BLE_TX_POWER_DBM);   // мощность передатчика BLE, дБм
   bleSecuritySetup();                 // защита: код доступа, один клиент, сброс по BOOT
   NimBLEDevice::setMTU(247);          // крупные пачки кадров в одном уведомлении
 
@@ -2672,12 +2677,19 @@ static SRes lzRead(ISeqInStreamPtr, void* buf, size_t* size) {
 
 // Выход кодера: в файл. Раз в секунду — flush (обновить размер в FAT)
 static size_t lzWrite(ISeqOutStreamPtr, const void* buf, size_t size) {
-  // Разовый сбой шины SD (помеха, просадка) переживаем повтором остатка
-  size_t w = canLogFile.write((const uint8_t*)buf, size);
-  for (int t = 0; t < 3 && w < size; t++) {
-    lzRetries++;
-    vTaskDelay(pdMS_TO_TICKS(20));
-    w += canLogFile.write((const uint8_t*)buf + w, size - w);
+  // Данные кодера лежат в PSRAM (словарь, буфер range coder). На SD их отдаём через
+  // небольшой буфер во внутренней RAM: так DMA карты не зависит от PSRAM и кэша.
+  // Повторов записи нет: после ошибки диска FatFs держит файл в состоянии ошибки,
+  // повтор бесполезен — помогает только закрыть файл и перемонтировать карту.
+  static uint8_t bounce[1024];
+  const uint8_t* src = (const uint8_t*)buf;
+  size_t w = 0;
+  while (w < size) {
+    size_t n = size - w > sizeof(bounce) ? sizeof(bounce) : size - w;
+    memcpy(bounce, src + w, n);
+    size_t k = canLogFile.write(bounce, n);
+    w += k;
+    if (k != n) break;
   }
   if (w != size) {                    // SD не приняла данные: кодер вернёт SZ_ERROR_WRITE (9)
     lzShortWrites++;
@@ -2721,8 +2733,8 @@ void lzTask(void*) {
     if (r != SZ_OK) {
       lzFailed = true;
       if (r == SZ_ERROR_WRITE)
-        errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d, повторов %lu) ble=%s sub=%d heap=%u psram=%u — карта не приняла данные; пробую перемонтировать и открыть новый файл",
-               currentLogName.c_str(), lzWriteErr, (unsigned long)lzRetries,
+        errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d, сбоев %lu) ble=%s sub=%d heap=%u psram=%u — карта не приняла данные; пробую перемонтировать и открыть новый файл",
+               currentLogName.c_str(), lzWriteErr, (unsigned long)lzShortWrites,
                bleConnHandle != 0xFFFF ? "conn" : "-", (int)framesSubscribed,
                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
       else if (r == SZ_ERROR_MEM)
