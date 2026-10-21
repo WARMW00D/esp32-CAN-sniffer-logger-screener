@@ -46,6 +46,7 @@ docs/
     camera_s3_ov5640.svg                         — wiring diagrams
 tools/
     can_time_decode.py                           — date/time and odometer from CAN logs
+    log_index.py                                 — index of all logs: when each file started and ended
     log_unpack.py                                — unpack .txt.lzma / .txt.gz logs (also truncated ones), join a folder
 README.md
 README_ru.md
@@ -222,7 +223,7 @@ The external RTC is optional. At boot the sniffer takes time from, in order:
 
 With `CAN_TIME_SYNC 2` the car's clock is authoritative: after disconnecting the car battery its clock is wrong, so set it (or enable GPS time sync in MMI), or switch to `1` / `0`. A time set on the portal or taken from CAN is also written to the external RTC if there is one. The boot marker in the log records the time source and the RTC type.
 
-`tools/can_time_decode.py` decodes 0x6B2 from existing logs and maps sniffer `millis` (and camera frame names) to wall-clock time.
+`tools/can_time_decode.py` decodes 0x6B2 from existing logs and maps sniffer `millis` (and camera frame names) to wall-clock time. `tools/log_index.py <SD folder>` goes through all log folders and writes `log_index.md` and `log_index.csv`: for every file the start and end time (from 0x6B2; continuation files without it take the time from the previous file of the same session), duration, odometer, session number (one per ignition-on) and remarks (not closed properly, portal pause, `/no-rtc`, folder date differs from the car clock). `--tz 3` if the car sends UTC.
 
 ### Diagnostics
 
@@ -256,11 +257,11 @@ One frame per line (inside the archive):
 `S` — 11-bit ID (3 hex digits), `X` — 29-bit ID (8 hex digits), `R` before DLC — remote frame. Lines starting with `#` are markers and should be skipped by parsers:
 
 ```
-# 812 ===== BOOT / SYNC MARK ===== fw=1.2.0 build="Sep 25 2026 22:53:51" reset=DEEPSLEEP can_bps=500000
+# 812 ===== BOOT / SYNC MARK ===== fw=2.10.2 reset=DEEPSLEEP can_bps=500000 Time="2026-09-25 22:53:51" tsrc=DS3231 rtc=DS3231
 # 931204 ===== ACC OFF / SHUTDOWN =====
 ```
 
-Close reasons: `ROTATE (download)`, `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT` (with `dropped=N` — frames lost since boot), `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt.lzma` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
+Close reasons: `ROTATE (download)`, `ACC OFF / SHUTDOWN`, `OTA REBOOT`, `CONFIG REBOOT` (with `dropped=N` — frames lost since boot), `ROTATE`; a rotated file starts with `CONTINUED from can_log_NNNN.txt.lzma` plus the firmware version and bitrate, so every file is self-contained. The boot marker records the firmware version, the current time as `Time="YYYY-MM-DD HH:MM:SS"` (`tsrc=` — where it came from: DS3231, CAN, portal…), reset reason (`BROWNOUT`, `PANIC`, `TASK_WDT`… help diagnose spontaneous reboots) and bitrate.
 
 ### BLE
 

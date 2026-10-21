@@ -117,7 +117,7 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.10.1"
+#define FW_VERSION   "2.10.2"
 // Мощность передатчика BLE, дБм. HUD рядом (в салоне), максимум +9 не нужен: меньше
 // мощность — меньше наводок на линии SD и пики тока. Если связь с HUD рвётся — поднимите.
 #define BLE_TX_POWER_DBM  0
@@ -2913,10 +2913,18 @@ bool openNewLogFile(const String& prevName) {
   char hdr[200];
   int n;
   if (prevName.length() == 0) {
-    n = snprintf(hdr, sizeof(hdr), "# %lu ===== BOOT / SYNC MARK ===== fw=%s build=\"%s\" reset=%s can_bps=%lu time=\"%s\" rtc=%s\n",
-                          (unsigned long)millis(), FW_VERSION, FW_BUILD,
+    char tbuf[24];
+    if (timeValid) {
+      DateTime t = nowTime();
+      snprintf(tbuf, sizeof(tbuf), "%04d-%02d-%02d %02d:%02d:%02d",
+               t.year(), t.month(), t.day(), t.hour(), t.minute(), t.second());
+    } else {
+      strcpy(tbuf, "unknown");
+    }
+    n = snprintf(hdr, sizeof(hdr), "# %lu ===== BOOT / SYNC MARK ===== fw=%s reset=%s can_bps=%lu Time=\"%s\" tsrc=%s rtc=%s\n",
+                          (unsigned long)millis(), FW_VERSION,
                           resetReasonStr(esp_reset_reason()), (unsigned long)canBitrate,
-                          timeValid ? timeSource : "none", rtcName());
+                          tbuf, timeValid ? timeSource : "none", rtcName());
   } else {
     n = snprintf(hdr, sizeof(hdr), "# %lu ===== CONTINUED from %s ===== fw=%s can_bps=%lu\n",
                           (unsigned long)millis(), prevName.c_str(), FW_VERSION,
