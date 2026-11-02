@@ -332,7 +332,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // Один клиент на устройство: второго подключившегося сразу отключаем.
   // Реклама после подключения не возобновляется до отключения клиента
   // (advertiseOnDisconnect(false) задан при создании сервера).
-  void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     if (pServer->getConnectedCount() > 1) {
       Serial.println("BLE: второй клиент — отключаю (устройство принимает одного)");
       pServer->disconnect(connInfo.getConnHandle());
@@ -344,9 +344,14 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     bleConnFailCounted = false;
     Serial.printf("BLE: подключился %s\n", connInfo.getAddress().toString().c_str());
 #if BLE_SECURE
-    NimBLEDevice::startSecurity(connInfo.getConnHandle());      // требуем сопряжение сразу
+    // ВАЖНО: НЕ инициируем сопряжение со стороны сервера.
+    // HUD (клиент) сам вызывает secureConnection(); встречная инициализация
+    // в NimBLE 2.x даёт гонку — у клиента secureConnection() ложно падает
+    // или зависает, а ATT-bearer блокируется (ACL-write не уходит).
+    // Неаутентифицированного клиента отключит bleSecurityWatchdog через 15 с.
+    // NimBLEDevice::startSecurity(connInfo.getConnHandle());   // <- УБРАТЬ
 #endif
-  }
+}
 
   // Код, который должен ввести клиент. Слот занят (клиент уже сопряжён) или
   // идёт блокировка после неудач — выдаём случайное число: новое сопряжение
