@@ -18,11 +18,8 @@ Originally built for an Audi A4 B9 (MLB-Evo, I-CAN at 500 kbit/s), but the sniff
 Arduino IDE requires each sketch to live in a folder with the same name:
 
 ```
-esp32s3_wroom_can_sd_ble_sync_server/
-    esp32s3_wroom_can_sd_ble_sync_server.ino    — CAN sniffer, ESP32-S3-WROOM-1 CAM board
-    src/lzma/                                   — LZMA encoder (LZMA SDK, public domain)
 esp32s3_can_sd_ble_sync_server/
-    esp32s3_can_sd_ble_sync_server.ino          — CAN sniffer, ESP32-S3 Super Mini
+    esp32s3_can_sd_ble_sync_server.ino          — CAN sniffer, one sketch for ESP32-S3-WROOM-1 CAM and ESP32-S3 Super Mini
     src/lzma/                                   — LZMA encoder (LZMA SDK, public domain)
 esp32s3_can_ble_gateway/
     esp32s3_can_ble_gateway.ino                 — CAN → BLE gateway for the HUD only (Super Mini, no SD, no RTC)
@@ -76,9 +73,15 @@ Every sniffer, gateway and replay folder also contains `secrets.example.h` (a te
 
 ### Hardware
 
-Two sketches with identical logic, portal, log format and BLE, differing only in board-specific parts:
+**One sketch for both boards** — `esp32s3_can_sd_ble_sync_server`. Select your board with one line at the top of the sketch:
 
-| | **`esp32s3_wroom_can_sd_ble_sync_server`** — ESP32-S3-WROOM-1 CAM (recommended) | **`esp32s3_can_sd_ble_sync_server`** — ESP32-S3 Super Mini |
+```cpp
+#define SNIFFER_BOARD  BOARD_WROOM_CAM   // or BOARD_SUPERMINI
+```
+
+The board setting switches only the board-specific parts: pins, how the SD card is connected (on-board SD_MMC slot or SPI module), Wi-Fi power and the on-board LED. Logic, portal, log format and BLE are shared, so a fix is made once and applies to both boards. Up to version 2.10 the boards had two separate sketches; the old `esp32s3_wroom_can_sd_ble_sync_server` folder is no longer needed — delete it.
+
+| | **`BOARD_WROOM_CAM`** — ESP32-S3-WROOM-1 CAM (recommended, default) | **`BOARD_SUPERMINI`** — ESP32-S3 Super Mini |
 |---|---|---|
 | Module | N16R8: 16 MB flash, 8 MB **OPI** PSRAM | FH4R2: 4 MB flash, 2 MB **QSPI** PSRAM |
 | SD card | On-board slot, SD_MMC 1-bit | External SPI module |
@@ -144,7 +147,8 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 
 | Define | Default | Meaning |
 |---|---|---|
-| `FW_VERSION` | `"2.10.1"` (sniffers) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
+| `SNIFFER_BOARD` | `BOARD_WROOM_CAM` | Sniffer board: `BOARD_WROOM_CAM` (ESP32-S3-WROOM-1 CAM, on-board SD slot) or `BOARD_SUPERMINI` (ESP32-S3 Super Mini, SPI SD module). Pins and SD access follow from it |
+| `FW_VERSION` | `"2.11.0"` (sniffer) / `"1.2.0"` (gateway) / `"1.1.0"` (replay) | Firmware version (MAJOR — breaking formats, MINOR — features, PATCH — fixes) |
 | `CAN_LISTEN_ONLY` | `1` | 1 = car (never transmits, not even ACK), 0 = bench (needed when the bench has only one other node) |
 | `CAN_BITRATE_DEFAULT` | `500000` | Bitrate used when nothing is stored in NVS |
 | `CAN_TIME_SYNC` | `2` | Time from CAN frame 0x6B2: 0 = off, 1 = only while time is unknown, 2 = also correct the clock if off by more than `CAN_TIME_MAX_DIFF_S` (5 s) |
@@ -156,6 +160,8 @@ Passwords and the BLE access code live in `secrets.h` next to the sketch, **not*
 | `LOG_COMPRESS` | `2` | Compression on the fly: 2 = LZMA (`.txt.lzma`, ~8× smaller, ~1 MB PSRAM), 1 = gzip (`.txt.gz`, ~3.5×, ~130 KB), 0 = plain `.txt` |
 | `LOG_LZMA_DICT` | `64 KB` | LZMA dictionary; 64 KB is the sweet spot for CAN logs (32 KB ≈ 7.7×) |
 | `LOG_GZ_DEPTH` | `4` | gzip only — match search depth: 1 = least CPU, 4 = better ratio almost for free |
+| `LOG_FLUSH_MS` | `3000` | LZMA only — data already written is committed on the card (FAT and file size updated) this often. Data goes to the card in aligned 4 KB blocks; after a power cut up to this interval plus up to 4 KB of the write buffer and the encoder is lost |
+| `CAN_QUEUE_LEN` / `TWAI_RX_QUEUE_LEN` | `4096` / `512` | Frame queue between reception and SD writing (in PSRAM, ~80 KB, ~2.5 s of I-CAN traffic — headroom for an SD remount) and the TWAI driver's own receive queue. Frames lost in either show up in `[STAT]` and in `errors.log` |
 | `LOG_GZ_SYNC_MS` | `1000` | gzip only — compressed data is flushed to the card this often; after a crash the file unpacks up to that point |
 | `WIFI_AP_HIDDEN` | `0` | 1 = hidden access point (SSID not broadcast) |
 | `WIFI_ACTIVE_MINUTES` | `5` | Wi-Fi access point, portal and espota OTA run for this many minutes after the ignition is switched on, then Wi-Fi is turned off until the next ignition-on (less heat and current). Not switched off while the portal is being used. 0 = always on |
@@ -257,7 +263,7 @@ One frame per line (inside the archive):
 `S` — 11-bit ID (3 hex digits), `X` — 29-bit ID (8 hex digits), `R` before DLC — remote frame. Lines starting with `#` are markers and should be skipped by parsers:
 
 ```
-# 812 ===== BOOT / SYNC MARK ===== fw=2.10.2 reset=DEEPSLEEP can_bps=500000 Time="2026-09-25 22:53:51" tsrc=DS3231 rtc=DS3231
+# 812 ===== BOOT / SYNC MARK ===== fw=2.11.0 reset=DEEPSLEEP can_bps=500000 Time="2026-09-25 22:53:51" tsrc=DS3231 rtc=DS3231
 # 931204 ===== ACC OFF / SHUTDOWN =====
 ```
 

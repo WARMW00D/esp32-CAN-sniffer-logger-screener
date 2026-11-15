@@ -1,28 +1,23 @@
 /*
-  ESP32-S3 Super Mini — автономный CAN-сниффер под приборкой (RTC + Web + BLE sync)
+  ESP32-S3 — автономный CAN-сниффер под приборкой (SD-лог + Web + BLE)
   ------------------------------------------------------------------------------
-  Дополнено относительно предыдущей версии:
-    - DS3231 (RTC-модуль по I2C) — эталонное время, держит ход даже без
-      питания платы (собственная батарейка CR2032 на модуле)
-    - Веб-страница для установки даты/времени на DS3231 (WiFi AP,
-      мощность передачи снижена до 8.5dBm)
-    - BLE-синхронизация теперь передаёт не только millis(), но и
-      unix-время (эпоху) — камера-компаньон использует его для создания
-      СВОИХ папок по датам, хотя у неё самой RTC нет
-    - Лог пишется в папку по дате (/YYYY-MM-DD/can_log_NNNN.txt, ротация
-      по LOG_MAX_BYTES и при каждом старте), а не в
-      общий файл в корне — как и файлы кадров на камере
+  ОДИН СКЕТЧ НА ДВЕ ПЛАТЫ. Плата выбирается строкой SNIFFER_BOARD ниже (раздел
+  "ПЛАТА"); от неё зависят только пины, способ подключения SD и пара
+  настроек. Всё остальное — общее, правка вносится один раз.
 
-  Архитектура приёма/записи CAN та же, что и раньше: canTask (ядро 0)
-  только читает TWAI и кладёт кадр в очередь, sdTask (ядро 1) разбирает
-  очередь и пишет на SD — разделение специально ради того, чтобы
-  запись на SD не блокировала приём при плотном трафике.
+    BOARD_WROOM_CAM  — ESP32-S3-WROOM-1 CAM (N16R8, два USB-C), рекомендуется:
+                       SD-слот на плате (SD_MMC), мощный AMS1117,
+                       16 МБ flash / 8 МБ PSRAM.
+    BOARD_SUPERMINI  — ESP32-S3 Super Mini (4 МБ flash / 2 МБ PSRAM),
+                       SD-модуль по SPI.
 
-  Подключение (ESP32-S3 Super Mini):
-    Трансивер — рекомендуется TJA1051T/3 (например, плата CJMCU-1051);
-    SN65HVD230 тоже работает, но на свой страх и риск (нет вывода silent)
-    -----------------------------
-    IO4 (TWAI TX) -> CTX (TXD), IO5 (TWAI RX) <- CRX (RXD)
+  Архитектура: canTask (ядро 0) только читает TWAI и кладёт кадр в
+  очередь; sdTask (ядро 1) форматирует строки, lzTask (ядро 1) сжимает
+  их и пишет на SD. Запись на SD не блокирует приём при плотном трафике.
+
+  Трансивер — рекомендуется TJA1051T/3 (например, плата CJMCU-1051);
+  SN65HVD230 тоже работает, но на свой страх и риск (нет вывода silent).
+    TWAI TX -> CTX (TXD), TWAI RX <- CRX (RXD)   (пины — в таблице ниже)
     VCC -> 5 В, VIO -> 3.3 В (питание логики — уровни 3.3 В для ESP32),
     S   -> VIO: аппаратный silent mode — передатчик отключён физически,
            трансивер не может занять шину ни при каком сбое, загрузке
@@ -36,24 +31,28 @@
     (нужен ACK). В машине при S = VIO режим NORMAL работать не будет:
     контроллер не увидит своих ACK и уйдёт в ошибки — оставляйте LISTEN_ONLY.
 
-    ESP32-S3           SD-модуль (SPI)
-    -----------------------------
-    IO10 -> CS     IO11 -> MOSI   IO12 -> SCK    IO13 -> MISO
+  Пины                 WROOM CAM                      Super Mini
+    CAN TX / RX        IO41 / IO42                    IO4 / IO5
+    SD                 слот на плате, SD_MMC 1-bit    модуль SPI: CS IO10,
+                       (CLK 39, CMD 38, D0 40)        MOSI IO11, SCK IO12, MISO IO13
+    Часы I2C SDA/SCL   IO21 / IO47                    IO8 / IO9
+    ACC (оптрон)       IO14                           IO7
+    RGB-светодиод      IO48                           IO48
+  Часы (необязательно) — DS3231 или PCF8563, определяются автоматически.
+  WROOM CAM: пины 4–18 разведены под разъём камеры — не используются;
+  светодиод IO2 гасится при старте (для I2C GPIO2 не годится).
 
-    Часы (необязательно), DS3231 или PCF8563 — определяются автоматически:
-    IO8 -> SDA     IO9 -> SCL     3.3V/GND -> VCC/GND
-
-    ACC (оптрон, LOW = зажигание вкл.): IO7.
-
-  Настройки Arduino IDE: ESP32S3 Dev Module, Flash 4MB, PSRAM "QSPI PSRAM",
-  Partition "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)", USB Mode
-  "Hardware CDC and JTAG", USB CDC On Boot "Enabled".
-  Вариант для платы ESP32-S3-WROOM-1 CAM — esp32s3_wroom_can_sd_ble_sync_server.
+  Настройки Arduino IDE (ESP32S3 Dev Module, USB Mode "Hardware CDC and
+  JTAG", USB CDC On Boot "Enabled"):
+    WROOM CAM:  Flash 16MB, PSRAM "OPI PSRAM",
+                Partition "16M Flash (3MB APP/9.9MB FATFS)"
+    Super Mini: Flash 4MB, PSRAM "QSPI PSRAM",
+                Partition "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)"
 
   Библиотеки (Arduino Library Manager):
     - adafruit/RTClib          (DS3231 / PCF8563)
-    - h2zero/NimBLE-Arduino    (BLE-синхронизация)
-    - SD.h, SPI.h, WiFi.h, WebServer.h, Wire.h, driver/twai.h —
+    - h2zero/NimBLE-Arduino    (BLE)
+    - SD_MMC.h / SD.h, SPI.h, WiFi.h, WebServer.h, Wire.h, driver/twai.h —
       часть ядра Arduino-ESP32
 
   !!! РЕЖИМ ШИНЫ !!! Задаётся CAN_LISTEN_ONLY ниже:
@@ -117,7 +116,19 @@
 //   PATCH — исправления без изменения поведения/форматов
 // Дата/время сборки подставляются компилятором автоматически.
 // =====================================================================
-#define FW_VERSION   "2.10.2"
+#define FW_VERSION   "2.11.0"
+
+// =====================================================================
+// ПЛАТА — выберите свою (см. таблицу пинов в шапке)
+// =====================================================================
+#define BOARD_WROOM_CAM  1   // ESP32-S3-WROOM-1 CAM, SD-слот на плате (SD_MMC)
+#define BOARD_SUPERMINI  2   // ESP32-S3 Super Mini, SD-модуль по SPI
+#ifndef SNIFFER_BOARD
+#define SNIFFER_BOARD  BOARD_SUPERMINI
+#endif
+#if SNIFFER_BOARD != BOARD_WROOM_CAM && SNIFFER_BOARD != BOARD_SUPERMINI
+  #error "SNIFFER_BOARD: BOARD_WROOM_CAM или BOARD_SUPERMINI"
+#endif
 // Мощность передатчика BLE, дБм. HUD рядом (в салоне), максимум +9 не нужен: меньше
 // мощность — меньше наводок на линии SD и пики тока. Если связь с HUD рвётся — поднимите.
 #define BLE_TX_POWER_DBM  0
@@ -127,8 +138,12 @@
 
 
 #include "driver/twai.h"
-#include <SPI.h>
-#include <SD.h>
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  #include <SD_MMC.h>
+#else
+  #include <SPI.h>
+  #include <SD.h>
+#endif
 #include <Wire.h>
 #include <RTClib.h>
 #include <WiFi.h>
@@ -148,6 +163,7 @@
 #endif
 #include "esp_random.h"
 #include "freertos/stream_buffer.h"
+#include "freertos/idf_additions.h"   // xQueueCreateWithCaps: очередь кадров в PSRAM
 // Кодер LZMA (LZMA SDK, public domain) — исходники в папке src/lzma скетча
 #include "src/lzma/LzmaEnc.h"
 #include "esp_app_format.h"
@@ -156,7 +172,16 @@
 
 // Файловая система логов: SD_MMC на WROOM CAM, SD (SPI) на Super Mini.
 // Весь код ниже работает через LOGFS — API у обеих одинаковый.
-#define LOGFS SD
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  #define LOGFS SD_MMC
+  #define SDMMC_LOG_KHZ    20000   // частота SD_MMC при записи лога, кГц
+  #define SDMMC_PORTAL_KHZ 20000   // пока работает портал (запись остановлена)
+  #define SDMMC_SAFE_KHZ   10000   // запасная, если на 20 МГц карта не заведётся
+  #define SD_FREQ_LOG      SDMMC_LOG_KHZ
+  #define SD_FREQ_PORTAL   SDMMC_PORTAL_KHZ
+#else
+  #define LOGFS SD
+#endif
 
 // ---------- Время ----------
 // Источники времени (по убыванию приоритета при старте):
@@ -242,7 +267,14 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 #define RGB_LED_GAP_MS      150   // пауза между вспышкой состояния и белой
 
 // ---------- Очередь кадров CAN ----------
-#define CAN_QUEUE_LEN  1024
+// В PSRAM (есть на обеих платах): 4096 кадров ~80 КБ, ~2,5 с трафика I-CAN —
+// запас на перемонтирование карты и закрытие файла. Не выделилась в PSRAM —
+// CAN_QUEUE_LEN_FALLBACK во внутренней памяти.
+#define CAN_QUEUE_LEN           4096
+#define CAN_QUEUE_LEN_FALLBACK  1024
+// Очередь приёма драйвера TWAI (кадров). По умолчанию у драйвера 5: любая
+// пауза задачи приёма дольше ~3 мс теряла кадры.
+#define TWAI_RX_QUEUE_LEN       512
 
 // ---------- Ротация лога ----------
 // Новый файл открывается при каждом старте и при достижении LOG_MAX_BYTES:
@@ -263,21 +295,26 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 // LZMA: словарь. 64 КБ — оптимум для CAN-логов (больше почти не даёт),
 // 32 КБ — ~7.7 раза и чуть меньше памяти
 #define LOG_LZMA_DICT    (64UL * 1024UL)
+// LZMA: раз в столько мс записанное на карту закрепляется (flush: обновить FAT и
+// размер файла). Реже — меньше обращений к карте, но при обрыве питания
+// теряется до этого интервала (плюс до 4 КБ в буфере записи и в кодере).
+#define LOG_FLUSH_MS     3000
 // gzip (LOG_COMPRESS 1): глубина поиска повторов
 #define LOG_GZ_DEPTH     4
 // Раз в столько мс данные "проталкиваются" на карту (sync flush): при сбое
 // питания теряется не больше этого интервала, файл распаковывается до обрыва
 #define LOG_GZ_SYNC_MS   1000
 
-// ---------- Частота SPI для SD ----------
-// 20 МГц — нормально для коротких проводов на макетке; не заведётся —
-// автоматически будет 4 МГц (как было раньше)
-// Частота SPI карты. Проверено: на сбои записи (LZMA код 9) частота не влияет.
-#define SD_SPI_FREQ_FAST   20000000   // запись лога
-#define SD_SPI_FREQ_PORTAL 20000000   // пока работает портал (запись остановлена)
-#define SD_FREQ_LOG    SD_SPI_FREQ_FAST
-#define SD_FREQ_PORTAL SD_SPI_FREQ_PORTAL
-#define SD_SPI_FREQ_SAFE    4000000
+// ---------- Частота SPI для SD (Super Mini) ----------
+// 20 МГц — нормально для коротких проводов; не заведётся — 4 МГц.
+// Проверено: на сбои записи (LZMA код 9) частота не влияет.
+#if SNIFFER_BOARD == BOARD_SUPERMINI
+  #define SD_SPI_FREQ_FAST   20000000   // запись лога
+  #define SD_SPI_FREQ_PORTAL 20000000   // пока работает портал (запись остановлена)
+  #define SD_FREQ_LOG    SD_SPI_FREQ_FAST
+  #define SD_FREQ_PORTAL SD_SPI_FREQ_PORTAL
+  #define SD_SPI_FREQ_SAFE    4000000
+#endif
 
 // ---------- Режим CAN ----------
 // 1 = машина (LISTEN_ONLY), 0 = стенд (NORMAL). См. шапку.
@@ -293,31 +330,55 @@ volatile uint32_t lzSbMax         = 0;   // макс. заполнение бу�
 
 // ---------- Пины CAN ----------
 // TX -> CTX трансивера, RX <- CRX трансивера (без перекрёста, см. шапку)
-#define TWAI_TX_PIN   GPIO_NUM_4   // -> CTX (D / TXD)
-#define TWAI_RX_PIN   GPIO_NUM_5   // <- CRX (R / RXD)
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  // Пины 4–18 на WROOM CAM разведены под разъём камеры — берём свободные
+  #define TWAI_TX_PIN   GPIO_NUM_41  // -> CTX (D / TXD)
+  #define TWAI_RX_PIN   GPIO_NUM_42  // <- CRX (R / RXD)
+#else
+  #define TWAI_TX_PIN   GPIO_NUM_4   // -> CTX (D / TXD)
+  #define TWAI_RX_PIN   GPIO_NUM_5   // <- CRX (R / RXD)
+#endif
 
 // ---------- Скорость CAN ----------
 // Выбирается на портале и хранится в NVS. Если в NVS ничего нет (или там
 // значение не из таблицы) — используется CAN_BITRATE_DEFAULT.
 #define CAN_BITRATE_DEFAULT   500000UL   // I-CAN MLB-Evo
 
-// ---------- Пины SD (SPI) ----------
-#define SD_CS_PIN    10
-#define SD_MOSI_PIN  11
-#define SD_SCK_PIN   12
-#define SD_MISO_PIN  13
-// ---------- Пины часов (I2C) ----------
-#define I2C_SDA  8
-#define I2C_SCL  9
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  // ---------- SD-слот на плате (SD_MMC, 1-битный режим) ----------
+  #define SDMMC_CLK_PIN  39
+  #define SDMMC_CMD_PIN  38
+  #define SDMMC_D0_PIN   40
+  // ---------- I2C для часов (необязательно, см. "Время") ----------
+  #define I2C_SDA  21
+  #define I2C_SCL  47
+  // Светодиод IO2 на плате — держим погашенным. Для I2C GPIO2 не годится:
+  // светодиод нагружает линию.
+  #define BOARD_LED_PIN  2
+#else
+  // ---------- Пины SD (SPI) ----------
+  #define SD_CS_PIN    10
+  #define SD_MOSI_PIN  11
+  #define SD_SCK_PIN   12
+  #define SD_MISO_PIN  13
+  // ---------- Пины часов (I2C) ----------
+  #define I2C_SDA  8
+  #define I2C_SCL  9
+#endif
 
 // ---------- Контроль ACC (зажигание) через оптрон ----------
-// GPIO7 — свободен, входит в RTC-домен S3 (обязательно для ext0-пробуждения
-// из глубокого сна). Ожидаемая полярность: оптрон открыт (ACC есть,
+// Пин должен входить в RTC-домен S3 (обязательно для ext0-пробуждения
+// из глубокого сна): IO14 на WROOM CAM, IO7 на Super Mini.
+// Ожидаемая полярность: оптрон открыт (ACC есть,
 // зажигание включено) -> транзистор оптрона тянет пин к GND -> LOW.
 // ACC отсутствует (зажигание выключено) -> внутренний pull-up держит HIGH.
 // Если у вашей схемы оптрона логика обратная — поменяйте местами
 // ACC_ON_LEVEL/ACC_OFF_LEVEL ниже, остальной код трогать не придётся.
-#define ACC_PIN         GPIO_NUM_7
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  #define ACC_PIN       GPIO_NUM_14
+#else
+  #define ACC_PIN       GPIO_NUM_7
+#endif
 #define ACC_ON_LEVEL       LOW
 #define ACC_OFF_LEVEL      HIGH
 
@@ -378,7 +439,11 @@ const int AP_CANDIDATES[3] = {1, 6, 11};
 // передаче (по умолчанию до ~19.5 дБм, пики сотни мА) и меньше просадки
 // питания; цена — дальность и скорость портала. Варианты из WiFi.h:
 // WIFI_POWER_19_5dBm, _17dBm, _15dBm, _13dBm, _11dBm, _8_5dBm, _7dBm, _5dBm, _2dBm
-#define WIFI_TX_POWER   WIFI_POWER_8_5dBm
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  #define WIFI_TX_POWER WIFI_POWER_13dBm    // у WROOM стабилизатор мощнее — можно больше
+#else
+  #define WIFI_TX_POWER WIFI_POWER_8_5dBm
+#endif
 // Сколько минут после включения зажигания работают точка доступа WiFi и
 // портал (и OTA через espota). Потом WiFi выключается до следующего
 // включения зажигания — меньше нагрев и потребление, эфир чище для BLE.
@@ -439,6 +504,7 @@ struct AclState { uint32_t key; uint32_t lastMs; uint8_t dlc; uint8_t data[8]; }
 static AclState aclState[ACL_STATE_SLOTS];
 
 QueueHandle_t bleQueue = nullptr;
+QueueHandle_t watchQueue = nullptr;          // кадры наблюдаемого ID: canTask -> bleTxTask
 NimBLECharacteristic* aclCharacteristic = nullptr;
 NimBLECharacteristic* framesCharacteristic = nullptr;
 volatile bool     framesSubscribed = false;
@@ -651,6 +717,7 @@ uint32_t currentLogBytes = 0;     // сколько записано в теку
 // Структура одного кадра для передачи между задачами через очередь
 
 QueueHandle_t canQueue;
+uint32_t canQueueLen = CAN_QUEUE_LEN;   // фактическая длина (PSRAM или запасной вариант)
 SemaphoreHandle_t shutdownDoneSemaphore;
 
 // Служебный "poison pill" — специальный ID, которым основной loop()
@@ -717,9 +784,13 @@ void setSystemTime(uint32_t unixLocal) {
 // До монтирования SD строки копятся в памяти и сбрасываются потом.
 // Формат: "2026-09-28 21:05:13 [fw 2.2.0, 123456 мс] текст"
 // ---------------------------------------------------------------------
-static SemaphoreHandle_t errMutex = nullptr;
-static String errPending[12];
+static SemaphoreHandle_t errMutex = nullptr;   // создаётся первым делом в setup()
+#define ERR_PENDING_MAX 16
+static String errPending[ERR_PENDING_MAX];
 static int    errPendingN = 0;
+// Карта только что не приняла запись: до успешного перемонтирования строки
+// журнала копятся в памяти (писать на отказавшую карту бессмысленно и опасно)
+volatile bool sdSuspect = false;
 
 static void errWriteLine(const String& line) {
   File f = LOGFS.open(ERRLOG_PATH, FILE_APPEND);
@@ -744,10 +815,10 @@ void errLog(const char* fmt, ...) {
   }
   String line = String(ts) + " [fw " FW_VERSION ", " + String(millis()) + " мс] " + msg + "\r\n";
   Serial.print("[ERR] " + line);
-  if (!errMutex) errMutex = xSemaphoreCreateMutex();
+  if (!errMutex) return;                         // до setup() — только Serial
   if (xSemaphoreTake(errMutex, pdMS_TO_TICKS(1000)) != pdTRUE) return;
-  if (!sdMounted) {
-    if (errPendingN < 12) errPending[errPendingN++] = line;
+  if (!sdMounted || sdSuspect) {
+    if (errPendingN < ERR_PENDING_MAX) errPending[errPendingN++] = line;
   } else {
     errWriteLine(line);
   }
@@ -756,7 +827,7 @@ void errLog(const char* fmt, ...) {
 
 // Сбросить накопленное до монтирования SD
 void errFlushPending() {
-  if (!errMutex) errMutex = xSemaphoreCreateMutex();
+  if (!errMutex) return;
   xSemaphoreTake(errMutex, portMAX_DELAY);
   for (int i = 0; i < errPendingN; i++) errWriteLine(errPending[i]);
   errPendingN = 0;
@@ -2399,7 +2470,6 @@ void setupBLESync() {
   bleSecuritySetup();                 // защита: код доступа, один клиент, сброс по BOOT
   NimBLEDevice::setMTU(247);          // крупные пачки кадров в одном уведомлении
 
-  bleQueue = xQueueCreate(ACL_QUEUE_LEN, sizeof(AclFrame));
   xTaskCreatePinnedToCore(bleTxTask, "bleTx", 4096, NULL, 1, NULL, 1);
 
   NimBLEServer* pServer = NimBLEDevice::createServer();
@@ -2676,6 +2746,25 @@ static volatile uint32_t   lzShortWrites = 0;   // сколько раз SD пр
 static volatile int        lzWriteErr = 0;      // код ошибки файла на момент сбоя записи
 static uint32_t            lzLastFlush = 0;
 
+// Вход кодера копится пачками: одна строка лога (~35 байт) на каждый вызов будила
+// бы lzTask на каждый кадр. Пачка уходит, когда полна или старше LZ_ACC_MAX_MS.
+#define LZ_ACC_SIZE    2048
+#define LZ_ACC_MAX_MS  250
+static uint8_t  lzAcc[LZ_ACC_SIZE];
+static size_t   lzAccLen = 0;
+static uint32_t lzAccFirstMs = 0;
+
+// Выход кодера на карту — через буфер во внутренней RAM, целыми блоками по
+// LZ_OUT_SIZE (кратно сектору 512 Б) с выравниванием по смещению в файле: FatFs
+// пишет такие блоки сразу на карту, без чтения-модификации-записи сектора.
+// Данные кодера лежат в PSRAM (словарь, буфер range coder) — DMA карты от неё
+// не зависит. Повторов записи нет: после ошибки диска FatFs держит файл в
+// состоянии ошибки, помогает только закрыть файл и перемонтировать карту.
+#define LZ_OUT_SIZE    4096
+static uint8_t  lzOut4k[LZ_OUT_SIZE] __attribute__((aligned(4)));
+static size_t   lzOutLen = 0;
+static uint32_t lzFileOff = 0;      // сколько байт уже ушло в файл
+
 static void* lzAllocF(ISzAllocPtr, size_t n) {
   void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // крупное — в PSRAM
   return p ? p : malloc(n);
@@ -2694,34 +2783,47 @@ static SRes lzRead(ISeqInStreamPtr, void* buf, size_t* size) {
   return SZ_OK;
 }
 
-// Выход кодера: в файл. Раз в секунду — flush (обновить размер в FAT)
-static size_t lzWrite(ISeqOutStreamPtr, const void* buf, size_t size) {
-  // Данные кодера лежат в PSRAM (словарь, буфер range coder). На SD их отдаём через
-  // небольшой буфер во внутренней RAM: так DMA карты не зависит от PSRAM и кэша.
-  // Повторов записи нет: после ошибки диска FatFs держит файл в состоянии ошибки,
-  // повтор бесполезен — помогает только закрыть файл и перемонтировать карту.
-  static uint8_t bounce[1024];
-  const uint8_t* src = (const uint8_t*)buf;
-  size_t w = 0;
-  while (w < size) {
-    size_t n = size - w > sizeof(bounce) ? sizeof(bounce) : size - w;
-    memcpy(bounce, src + w, n);
-    size_t k = canLogFile.write(bounce, n);
-    w += k;
-    if (k != n) break;
-  }
-  if (w != size) {                    // SD не приняла данные: кодер вернёт SZ_ERROR_WRITE (9)
+// Записать накопленное в файл. false — карта приняла не всё
+static bool lzOutDrain() {
+  if (!lzOutLen) return true;
+  size_t k = canLogFile.write(lzOut4k, lzOutLen);
+  lzFileOff += k;
+  bool ok = (k == lzOutLen);
+  if (!ok) {
     lzShortWrites++;
     lzWriteErr = canLogFile.getWriteError();
   }
-  lzOutBytes += w;
-  logOutTotal += w;
-  if (millis() - lzLastFlush >= 1000) { canLogFile.flush(); lzLastFlush = millis(); }
-  return w;
+  lzOutLen = 0;
+  return ok;
+}
+
+// Выход кодера: в буфер; полный блок — на карту (все записи, кроме последней
+// в файле, — целые выровненные блоки по 4 КБ). Раз в LOG_FLUSH_MS — flush.
+static size_t lzWrite(ISeqOutStreamPtr, const void* buf, size_t size) {
+  const uint8_t* src = (const uint8_t*)buf;
+  size_t w = 0;
+  while (w < size) {
+    size_t cap = LZ_OUT_SIZE - (lzFileOff % LZ_OUT_SIZE);   // до границы блока в файле
+    size_t n = size - w;
+    if (n > cap - lzOutLen) n = cap - lzOutLen;
+    memcpy(lzOut4k + lzOutLen, src + w, n);
+    lzOutLen += n;
+    w += n;
+    if (lzOutLen == cap && !lzOutDrain()) return 0;   // кодер вернёт SZ_ERROR_WRITE (9)
+  }
+  lzOutBytes += size;
+  logOutTotal += size;
+  // flush — только то, что уже на карте; хвост буфера (< 4 КБ) ждёт полного
+  // блока, как и буфер самого кодера: при обрыве питания теряется не больше
+  if (millis() - lzLastFlush >= LOG_FLUSH_MS) {
+    canLogFile.flush();
+    lzLastFlush = millis();
+  }
+  return size;
 }
 
 static const ISeqInStream  lzIn  = { lzRead };
-static const ISeqOutStream lzOut = { lzWrite };
+static const ISeqOutStream lzOutStream = { lzWrite };
 
 void lzTask(void*) {
   for (;;) {
@@ -2744,22 +2846,26 @@ void lzTask(void*) {
         SizeT hs = 5;
         LzmaEnc_WriteProperties(enc, hdr, &hs);
         memset(hdr + 5, 0xFF, 8);
-        lzWrite(&lzOut, hdr, 13);
-        r = LzmaEnc_Encode(enc, &lzOut, &lzIn, NULL, &lzAlloc, &lzAlloc);
+        if (lzWrite(&lzOutStream, hdr, 13) != 13) r = SZ_ERROR_WRITE;
+        else r = LzmaEnc_Encode(enc, &lzOutStream, &lzIn, NULL, &lzAlloc, &lzAlloc);
+        if (r == SZ_OK && !lzOutDrain()) r = SZ_ERROR_WRITE;   // хвост после конца потока
       }
       LzmaEnc_Destroy(enc, &lzAlloc, &lzAlloc);
     }
     if (r != SZ_OK) {
       lzFailed = true;
-      if (r == SZ_ERROR_WRITE)
+      lzOutLen = 0;
+      String fileName = getActiveLogPath();   // копия под блокировкой: currentLogName меняет sdTask
+      if (r == SZ_ERROR_WRITE) {
+        sdSuspect = true;                     // журнал — в память до перемонтирования
         errLog("SD: сбой записи в %s (LZMA код 9, writeErr=%d, сбоев %lu) ble=%s sub=%d heap=%u psram=%u — карта не приняла данные; пробую перемонтировать и открыть новый файл",
-               currentLogName.c_str(), lzWriteErr, (unsigned long)lzShortWrites,
+               fileName.c_str(), lzWriteErr, (unsigned long)lzShortWrites,
                bleConnHandle != 0xFFFF ? "conn" : "-", (int)framesSubscribed,
                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
-      else if (r == SZ_ERROR_MEM)
-        errLog("LZMA: не хватило памяти под кодер (код 2) — файл %s не пишется, пробую новый", currentLogName.c_str());
+      } else if (r == SZ_ERROR_MEM)
+        errLog("LZMA: не хватило памяти под кодер (код 2) — файл %s не пишется, пробую новый", fileName.c_str());
       else
-        errLog("LZMA: ошибка кодера %d — файл %s не пишется, пробую новый", (int)r, currentLogName.c_str());
+        errLog("LZMA: ошибка кодера %d — файл %s не пишется, пробую новый", (int)r, fileName.c_str());
       // Выгребаем вход до конца, чтобы sdTask не повис на полном буфере
       uint8_t junk[256];
       while (!(lzEof && xStreamBufferIsEmpty(lzSb)))
@@ -2787,8 +2893,29 @@ void lzStartFile() {
   lzFailed = false;
   lzWriteErr = 0;
   lzOutBytes = 0;
+  lzAccLen = 0;
+  lzOutLen = 0;
+  lzFileOff = 0;
   lzLastFlush = millis();
   xSemaphoreGive(lzStartSem);
+}
+#endif
+
+#if LOG_COMPRESS == 2
+// Отдать накопленную пачку кодеру
+static void lzAccFlush() {
+  if (!lzAccLen) return;
+  if (!lzFailed) {
+    // Если кодер не успевает, ждём (кадры пока копятся в canQueue)
+    size_t sent = xStreamBufferSend(lzSb, lzAcc, lzAccLen, pdMS_TO_TICKS(3000));
+    if (sent < lzAccLen) {
+      lzFailed = true;
+      errLog("LZMA: кодер не принимает данные 3 с (завис?) — запись файла %s остановлена", currentLogName.c_str());
+    }
+    size_t fill = xStreamBufferBytesAvailable(lzSb);
+    if (fill > lzSbMax) lzSbMax = fill;
+  }
+  lzAccLen = 0;
 }
 #endif
 
@@ -2796,14 +2923,12 @@ void lzStartFile() {
 void logWrite(const char* d, size_t n) {
 #if LOG_COMPRESS == 2
   if (!lzFailed) {
-    // Если кодер не успевает, ждём (кадры пока копятся в canQueue)
-    size_t sent = xStreamBufferSend(lzSb, d, n, pdMS_TO_TICKS(3000));
-    if (sent < n) {
-      lzFailed = true;
-      errLog("LZMA: кодер не принимает данные 3 с (завис?) — запись файла %s остановлена", currentLogName.c_str());
-    }
-    size_t fill = xStreamBufferBytesAvailable(lzSb);
-    if (fill > lzSbMax) lzSbMax = fill;
+    if (lzAccLen + n > LZ_ACC_SIZE) lzAccFlush();
+    if (!lzAccLen) lzAccFirstMs = millis();
+    if (n > LZ_ACC_SIZE) n = LZ_ACC_SIZE;      // строки лога короче 200 байт
+    memcpy(lzAcc + lzAccLen, d, n);
+    lzAccLen += n;
+    if (millis() - lzAccFirstMs >= LZ_ACC_MAX_MS) lzAccFlush();
   }
 #elif LOG_COMPRESS == 1
   gzLog.write((const uint8_t*)d, n);
@@ -2827,11 +2952,11 @@ uint32_t logFileBytes() {
 #endif
 }
 
-// Протолкнуть данные на карту. Для LZMA — ничего: файлом владеет кодер,
-// он сам сбрасывает данные на карту
+// Протолкнуть данные на карту. Для LZMA — только отдать пачку кодеру:
+// файлом владеет кодер, он сам сбрасывает данные на карту
 void logSync() {
 #if LOG_COMPRESS == 2
-  return;
+  lzAccFlush();      // пачку — кодеру; на карту данные кодер сбросит сам
 #else
 #if LOG_COMPRESS == 1
   if (gzDirty) { gzLog.sync(); gzDirty = false; }
@@ -2844,6 +2969,7 @@ void logSync() {
 // Закрыть файл штатно (для .gz / .lzma — с корректным концом потока)
 void logClose() {
 #if LOG_COMPRESS == 2
+  lzAccFlush();
   lzEof = true;
   if (xSemaphoreTake(lzDoneSem, pdMS_TO_TICKS(15000)) != pdTRUE)
     errLog("LZMA: кодер не завершился за 15 с — файл %s закрыт как есть", currentLogName.c_str());
@@ -2940,11 +3066,19 @@ bool openNewLogFile(const String& prevName) {
 // идут в exFAT — ядро Arduino-ESP32 его не поддерживает). Смонтированную
 // карту НЕ форматируем: её содержимое удаляется кнопкой на странице логов.
 bool sdFormatAndMount() {
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  SD_MMC.end();
+  SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
+  // format_if_mount_failed = true: ядро размечает карту в FAT32
+  // (кластер 64 КБ), если смонтировать её не удалось (exFAT, пустая)
+  bool ok = SD_MMC.begin("/sdcard", true, true, SDMMC_FREQ_DEFAULT);
+#else
   SD.end();
   SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
   // format_if_empty = true: если на карте нет FAT (exFAT, пустая) —
   // FatFs размечает её сам, для больших карт получается FAT32
   bool ok = SD.begin(SD_CS_PIN, SPI, SD_SPI_FREQ_SAFE, "/sd", 5, true);
+#endif
   if (ok) {
     sdMounted = true;
     Serial.printf("SD-карта отформатирована и смонтирована, %llu МБ\n",
@@ -2985,6 +3119,24 @@ void handleSdFormat() {
 }
 
 void setupSD() {
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  // Слот на плате: SD_MMC в 1-битном режиме. 20 МГц, не заведётся — 10 МГц
+  SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
+  int sdKHz = SDMMC_LOG_KHZ;
+  bool ok = SD_MMC.begin("/sdcard", true, false, sdKHz);
+  if (!ok) {
+    Serial.printf("SD_MMC на %d МГц не завелась — пробую %d МГц\n", SDMMC_LOG_KHZ / 1000, SDMMC_SAFE_KHZ / 1000);
+    SD_MMC.end();
+    sdKHz = SDMMC_SAFE_KHZ;
+    ok = SD_MMC.begin("/sdcard", true, false, sdKHz);
+  }
+  if (!ok) {
+    Serial.println("Ошибка инициализации SD-карты!");
+    return;
+  }
+  Serial.printf("SD-карта инициализирована (SD_MMC 1-bit, %d МГц, %llu МБ)\n",
+                sdKHz / 1000, SD_MMC.cardSize() / (1024ULL * 1024ULL));
+#else
   SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
   // По умолчанию SD.begin() работает на 4 МГц — это ~400 КБ/с чтения,
   // скачивание больших логов упиралось в SD. Пробуем быструю частоту,
@@ -3001,6 +3153,7 @@ void setupSD() {
     }
   }
   Serial.printf("SD-карта инициализирована (SPI %lu МГц)\n", (unsigned long)(sdFreq / 1000000));
+#endif
   sdMounted = true;
 
   // Файл НЕ создаётся при старте: откроется при первом реальном кадре CAN.
@@ -3009,12 +3162,18 @@ void setupSD() {
 }
 
 // Перемонтировать SD после сбоя записи (вибрация, просадка питания, контакт)
-static bool sdRemount(uint32_t hz = SD_FREQ_LOG) {
+// freq: Гц для SPI (Super Mini), кГц для SD_MMC (WROOM CAM)
+static bool sdRemount(uint32_t freq = SD_FREQ_LOG) {
   sdMounted = false;
-  SD.end();
+  LOGFS.end();
   delay(100);
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
+  bool ok = SD_MMC.begin("/sdcard", true, false, (int)freq);
+#else
   SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-  bool ok = SD.begin(SD_CS_PIN, SPI, hz);
+  bool ok = SD.begin(SD_CS_PIN, SPI, freq);
+#endif
   sdMounted = ok;
   return ok;
 }
@@ -3082,8 +3241,14 @@ void bleTxTask(void*) {
     len = 2; cnt = 0;
   };
   for (;;) {
+    // Наблюдаемый ID (LCD): отправить всё, что накопилось
+    WatchedFramePacket wp;
+    while (watchQueue && xQueueReceive(watchQueue, &wp, 0) == pdTRUE) {
+      watchDataCharacteristic->setValue((uint8_t*)&wp, sizeof(wp));
+      watchDataCharacteristic->notify();
+    }
     AclFrame f;
-    bool got = xQueueReceive(bleQueue, &f, pdMS_TO_TICKS(cnt ? 5 : 200)) == pdTRUE;
+    bool got = xQueueReceive(bleQueue, &f, pdMS_TO_TICKS(cnt ? 5 : (watchedCanId ? 10 : 200))) == pdTRUE;
     size_t maxPayload = framesMtu > 3 ? framesMtu - 3 : 20;
     if (maxPayload > sizeof(buf)) maxPayload = sizeof(buf);
     if (got && framesSubscribed) {
@@ -3111,6 +3276,7 @@ void canTask(void* param) {
       TWAI_GENERAL_CONFIG_DEFAULT(TWAI_TX_PIN, TWAI_RX_PIN, TWAI_MODE_NORMAL);
 #endif
 
+  g_config.rx_queue_len = TWAI_RX_QUEUE_LEN;
   twai_timing_config_t t_config = canTimingFor(canBitrate);
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -3142,20 +3308,17 @@ void canTask(void* param) {
       if (qw > canQueueMax) canQueueMax = qw;
       lastCanFrameMs = millis();
 
-      // Живая трансляция сырых данных наблюдаемого ID по BLE — отдельно
-      // от лога, лёгкая операция (notify() асинхронно уходит в BLE-стек,
-      // не блокирует приём следующих кадров). Если клиент не подписан —
-      // notify() просто ничего не сделает, безопасно вызывать всегда.
-      if (framesSubscribed && aclCur->n) aclProcess(message);
+      // Поток кадров по ACL (HUD): фильтр и постановка в очередь bleTxTask
+      if (framesSubscribed && aclCur->n && bleQueue) aclProcess(message);
 
-      if (watchedCanId != 0 && message.identifier == watchedCanId) {
+      // Наблюдаемый ID — в очередь; notify() делает bleTxTask, приём CAN
+      // в стек BLE не заходит
+      if (watchedCanId != 0 && message.identifier == watchedCanId && watchQueue) {
         WatchedFramePacket packet;
         packet.id = message.identifier;
-        packet.dlc = message.data_length_code;
-        memset(packet.data, 0, sizeof(packet.data));
-        memcpy(packet.data, message.data, packet.dlc);
-        watchDataCharacteristic->setValue((uint8_t*)&packet, sizeof(packet));
-        watchDataCharacteristic->notify();
+        packet.dlc = entry.dlc;
+        memcpy(packet.data, entry.data, sizeof(packet.data));
+        xQueueSend(watchQueue, &packet, 0);   // полна — кадр пропускаем
       }
     }
   }
@@ -3206,6 +3369,8 @@ bool logWriteFrame(const CanLogEntry& entry) {
     logNeedRemount = false;
     logOpenFailed = false;
     logLastOpenFail = 0;
+    sdSuspect = false;
+    errFlushPending();               // строки, отложенные на время сбоя
     errLog("SD: перемонтирована, запись возобновляется (простой %lu мс, попыток %u)",
            (unsigned long)(millis() - logFailAt), (unsigned)(logRecoverTries + 1));
   }
@@ -3225,25 +3390,36 @@ bool logWriteFrame(const CanLogEntry& entry) {
     }
   }
 
-  // <millis> <S|X> <ID> [R]<DLC> <байты> — без String, чтобы не
-  // фрагментировать кучу на плотном трафике
+  // <millis> <S|X> <ID> [R]<DLC> <байты> — собираем вручную (snprintf на
+  // каждый байт стоил ~15 тыс. вызовов в секунду на плотной шине).
+  // Формат прежний, байт в байт: "%lu S %03lX %s%u" + " %02X"... + "\r\n"
+  static const char HEXU[] = "0123456789ABCDEF";
   char line[64];
+  char* p = line;
   bool extd = entry.flags & LOGF_EXTD;
   bool rtr  = entry.flags & LOGF_RTR;
-  int n = extd
-    ? snprintf(line, sizeof(line), "%lu X %08lX %s%u",
-               (unsigned long)entry.timestamp, (unsigned long)entry.id,
-               rtr ? "R" : "", entry.dlc)
-    : snprintf(line, sizeof(line), "%lu S %03lX %s%u",
-               (unsigned long)entry.timestamp, (unsigned long)entry.id,
-               rtr ? "R" : "", entry.dlc);
+  {
+    char t[10]; int k = 0;                       // millis, десятичное
+    uint32_t v = entry.timestamp;
+    do { t[k++] = '0' + v % 10; v /= 10; } while (v);
+    while (k) *p++ = t[--k];
+  }
+  *p++ = ' ';
+  *p++ = extd ? 'X' : 'S';
+  *p++ = ' ';
+  for (int sh = extd ? 28 : 8; sh >= 0; sh -= 4) *p++ = HEXU[(entry.id >> sh) & 0xF];   // 8 или 3 цифры
+  *p++ = ' ';
+  if (rtr) *p++ = 'R';
+  *p++ = '0' + (entry.dlc > 8 ? 8 : entry.dlc);
   if (!rtr) {
-    for (int i = 0; i < entry.dlc && n < (int)sizeof(line) - 4; i++) {
-      n += snprintf(line + n, sizeof(line) - n, " %02X", entry.data[i]);
+    for (int i = 0; i < entry.dlc && i < 8; i++) {
+      *p++ = ' ';
+      *p++ = HEXU[entry.data[i] >> 4];
+      *p++ = HEXU[entry.data[i] & 0xF];
     }
   }
-
-  line[n++] = '\r'; line[n++] = '\n';   // как println (буфер с запасом)
+  *p++ = '\r'; *p++ = '\n';                      // как println
+  int n = p - line;
   logWrite(line, n);
 #if LOG_COMPRESS == 1
   if (millis() - gzLastSync >= LOG_GZ_SYNC_MS) logSync();
@@ -3552,9 +3728,18 @@ void ledOff() {}
 #endif
 
 void setup() {
+  errMutex = xSemaphoreCreateMutex();   // до первого errLog(): журнал пишут несколько задач
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  Serial.setTxTimeoutMs(0);   // печать в USB-CDC не блокирует задачи (при полном буфере текст отбрасывается)
+#endif
   Serial.printf("\n=== S3 CAN Sniffer, прошивка %s (сборка %s), сброс: %s ===\n",
                 FW_VERSION, FW_BUILD, resetReasonStr(esp_reset_reason()));
+
+#if SNIFFER_BOARD == BOARD_WROOM_CAM
+  pinMode(BOARD_LED_PIN, OUTPUT);
+  digitalWrite(BOARD_LED_PIN, LOW);
+#endif
 
   // После пробуждения пин остаётся в RTC-режиме — возвращаем в обычный GPIO
   rtc_gpio_deinit(ACC_PIN);
@@ -3593,7 +3778,15 @@ void setup() {
 
   // Очередь кадров: запас на задержки записи SD и на ожидание времени
   // из CAN перед открытием первого файла (~2 с трафика I-CAN)
-  canQueue = xQueueCreate(CAN_QUEUE_LEN, sizeof(CanLogEntry));
+  canQueue = xQueueCreateWithCaps(CAN_QUEUE_LEN, sizeof(CanLogEntry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  canQueueLen = CAN_QUEUE_LEN;
+  if (!canQueue) {
+    canQueue = xQueueCreate(CAN_QUEUE_LEN_FALLBACK, sizeof(CanLogEntry));
+    canQueueLen = CAN_QUEUE_LEN_FALLBACK;
+    Serial.println("Очередь CAN: PSRAM недоступна — очередь меньше, во внутренней памяти");
+  }
+  bleQueue   = xQueueCreate(ACL_QUEUE_LEN, sizeof(AclFrame));
+  watchQueue = xQueueCreate(16, sizeof(WatchedFramePacket));
   shutdownDoneSemaphore = xSemaphoreCreateBinary();
   rotateDoneSemaphore   = xSemaphoreCreateBinary();
 
@@ -3608,14 +3801,19 @@ void setup() {
         rr == ESP_RST_WDT || rr == ESP_RST_BROWNOUT || rr == ESP_RST_UNKNOWN)
       errLog("Перезагрузка по сбою: %s", resetReasonStr(rr));
   }
-  setupWiFiAndWebServer();
-  setupBLESync();
 
-  xTaskCreatePinnedToCore(canTask, "canTask", 4096, NULL, 2, NULL, 0);
+  // Приём и запись — сразу после SD, до WiFi (скан эфира 2–3 с) и BLE:
+  // кадры пробуждения шины после включения зажигания попадают в лог.
+  // canTask — приоритет 10 на ядре 0: приём важнее радио и записи.
+  xTaskCreatePinnedToCore(canTask, "canTask", 4096, NULL, 10, NULL, 0);
 #if LOG_COMPRESS == 2
   lzSetup();
 #endif
   xTaskCreatePinnedToCore(sdTask,  "sdTask",  8192, NULL, 1, NULL, 1);
+
+  setupWiFiAndWebServer();
+  setupBLESync();
+
 #if RGB_LED_ENABLE
   ledWrite(0, 0, 0);
   xTaskCreatePinnedToCore(ledTask, "ledTask", 3072, NULL, 1, NULL, 1);
@@ -3696,7 +3894,12 @@ void statsLoop() {
   if (now - last < STATS_PERIOD_MS) return;
   float sec = (now - last) / 1000.0f;
   uint32_t fr = canFramesTotal, dr = canDroppedTotal, in = logInTotal, out = logOutTotal;
-  uint32_t qPct = canQueueMax * 100 / CAN_QUEUE_LEN;
+  uint32_t qPct = canQueueMax * 100 / canQueueLen;
+  // Счётчики драйвера TWAI: кадры, потерянные ДО очереди canQueue (очередь
+  // драйвера переполнилась — задача приёма не успевала) и ошибки шины
+  static uint32_t lastMissed = 0, lastOverrun = 0, lastBusErr = 0;
+  twai_status_info_t tst = {};
+  bool tstOk = canRunning && twai_get_status_info(&tst) == ESP_OK;
 #if LOG_COMPRESS == 2
   uint32_t sbPct = lzSbMax * 100 / (32 * 1024);
 #else
@@ -3709,6 +3912,16 @@ void statsLoop() {
                   (out - lastOut) ? (float)(in - lastIn) / (out - lastOut) : 0.0f,
                   (unsigned)sbPct, (unsigned)qPct, (unsigned long)(dr - lastDropped), (unsigned long)dr);
   }
+  if (tstOk && last != 0 && (tst.rx_missed_count != lastMissed || tst.rx_overrun_count != lastOverrun)) {
+    errLog("CAN: драйвер потерял %lu кадров (очередь драйвера), переполнений приёмника %lu, ошибок шины %lu за %.0f с",
+           (unsigned long)(tst.rx_missed_count - lastMissed), (unsigned long)(tst.rx_overrun_count - lastOverrun),
+           (unsigned long)(tst.bus_error_count - lastBusErr), sec);
+  }
+  if (tstOk && last != 0 && fr != lastFrames)
+    Serial.printf("[STAT] TWAI: потеряно драйвером %lu, переполнений %lu, ошибок шины %lu (всего)\n",
+                  (unsigned long)tst.rx_missed_count, (unsigned long)tst.rx_overrun_count,
+                  (unsigned long)tst.bus_error_count);
+  if (tstOk) { lastMissed = tst.rx_missed_count; lastOverrun = tst.rx_overrun_count; lastBusErr = tst.bus_error_count; }
   static uint32_t lastBleSent = 0, lastBleDrop = 0;
   uint32_t bs = bleSentTotal, bd = bleDroppedTotal;
   if (last != 0 && (bs != lastBleSent || bd != lastBleDrop))
